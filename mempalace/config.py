@@ -10,6 +10,8 @@ from pathlib import Path
 
 DEFAULT_PALACE_PATH = os.path.expanduser("~/.mempalace/palace")
 DEFAULT_COLLECTION_NAME = "mempalace_drawers"
+DEFAULT_ES_INDEX_NAME = "mempalace_drawers"
+DEFAULT_ES_INFERENCE_ID = "mempalace-embeddings"
 
 DEFAULT_TOPIC_WINGS = [
     "emotions",
@@ -101,6 +103,32 @@ class MempalaceConfig:
     def collection_name(self):
         """ChromaDB collection name."""
         return self._file_config.get("collection_name", DEFAULT_COLLECTION_NAME)
+
+    @property
+    def es_cloud_id(self):
+        """Elasticsearch Serverless cloud ID."""
+        return os.environ.get("MEMPALACE_ES_CLOUD_ID") or self._file_config.get("es_cloud_id")
+
+    @property
+    def es_api_key(self):
+        """Elasticsearch API key."""
+        return os.environ.get("MEMPALACE_ES_API_KEY") or self._file_config.get("es_api_key")
+
+    @property
+    def es_index_name(self):
+        """Elasticsearch index name."""
+        return (
+            os.environ.get("MEMPALACE_ES_INDEX")
+            or self._file_config.get("es_index_name", DEFAULT_ES_INDEX_NAME)
+        )
+
+    @property
+    def es_inference_id(self):
+        """Elasticsearch inference endpoint ID for embeddings."""
+        return (
+            os.environ.get("MEMPALACE_ES_INFERENCE_ID")
+            or self._file_config.get("es_inference_id", DEFAULT_ES_INFERENCE_ID)
+        )
 
     @property
     def people_map(self):

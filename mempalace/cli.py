@@ -156,30 +156,23 @@ def cmd_status(args):
 
 
 def cmd_repair(args):
-    """Rebuild palace vector index from SQLite metadata."""
-    import chromadb
-    import shutil
+    """Reindex palace drawers in Elasticsearch."""
+    from .es_client import get_es_collection
 
-    palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
-
-    if not os.path.isdir(palace_path):
-        print(f"\n  No palace found at {palace_path}")
+    col = get_es_collection()
+    if not col:
+        print("\n  No palace found (ES not configured or index missing)")
         return
 
     print(f"\n{'=' * 55}")
-    print("  MemPalace Repair")
+    print("  MemPalace Repair (ES Reindex)")
     print(f"{'=' * 55}\n")
-    print(f"  Palace: {palace_path}")
 
-    # Try to read existing drawers
     try:
-        client = chromadb.PersistentClient(path=palace_path)
-        col = client.get_collection("mempalace_drawers")
         total = col.count()
         print(f"  Drawers found: {total}")
     except Exception as e:
         print(f"  Error reading palace: {e}")
-        print("  Cannot recover — palace may need to be re-mined from source files.")
         return
 
     if total == 0:
@@ -188,7 +181,7 @@ def cmd_repair(args):
 
     # Extract all drawers in batches
     print("\n  Extracting drawers...")
-    batch_size = 5000
+    batch_size = 500
     all_ids = []
     all_docs = []
     all_metas = []
@@ -201,28 +194,18 @@ def cmd_repair(args):
         offset += batch_size
     print(f"  Extracted {len(all_ids)} drawers")
 
-    # Backup and rebuild
-    backup_path = palace_path + ".backup"
-    if os.path.exists(backup_path):
-        shutil.rmtree(backup_path)
-    print(f"  Backing up to {backup_path}...")
-    shutil.copytree(palace_path, backup_path)
-
-    print("  Rebuilding collection...")
-    client.delete_collection("mempalace_drawers")
-    new_col = client.create_collection("mempalace_drawers")
-
+    # Re-index all drawers
+    print("  Re-indexing drawers...")
     filed = 0
     for i in range(0, len(all_ids), batch_size):
         batch_ids = all_ids[i : i + batch_size]
         batch_docs = all_docs[i : i + batch_size]
         batch_metas = all_metas[i : i + batch_size]
-        new_col.add(documents=batch_docs, ids=batch_ids, metadatas=batch_metas)
+        col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
         filed += len(batch_ids)
         print(f"  Re-filed {filed}/{len(all_ids)} drawers...")
 
-    print(f"\n  Repair complete. {filed} drawers rebuilt.")
-    print(f"  Backup saved at {backup_path}")
+    print(f"\n  Repair complete. {filed} drawers reindexed.")
     print(f"\n{'=' * 55}\n")
 
 
@@ -242,7 +225,7 @@ def cmd_instructions(args):
 
 def cmd_compress(args):
     """Compress drawers in a wing using AAAK Dialect."""
-    import chromadb
+    from .es_client import get_es_collection
     from .dialect import Dialect
 
     palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
@@ -262,15 +245,13 @@ def cmd_compress(args):
         dialect = Dialect()
 
     # Connect to palace
-    try:
-        client = chromadb.PersistentClient(path=palace_path)
-        col = client.get_collection("mempalace_drawers")
-    except Exception:
-        print(f"\n  No palace found at {palace_path}")
+    col = get_es_collection()
+    if not col:
+        print("\n  No palace found (ES not configured or index missing)")
         print("  Run: mempalace init <dir> then mempalace mine <dir>")
         sys.exit(1)
 
-    # Query drawers in batches to avoid SQLite variable limit (~999)
+    # Query drawers in batches
     where = {"wing": args.wing} if args.wing else None
     _BATCH = 500
     docs, metas, ids = [], [], []
@@ -332,21 +313,20 @@ def cmd_compress(args):
             print(f"    {compressed}")
             print()
 
-    # Store compressed versions (unless dry-run)
+    # Store compressed versions in content_aaak field (unless dry-run)
     if not args.dry_run:
         try:
-            comp_col = client.get_or_create_collection("mempalace_compressed")
             for doc_id, compressed, meta, stats in compressed_entries:
                 comp_meta = dict(meta)
                 comp_meta["compression_ratio"] = round(stats["ratio"], 1)
                 comp_meta["original_tokens"] = stats["original_tokens"]
-                comp_col.upsert(
+                col.upsert(
                     ids=[doc_id],
                     documents=[compressed],
                     metadatas=[comp_meta],
                 )
             print(
-                f"  Stored {len(compressed_entries)} compressed drawers in 'mempalace_compressed' collection."
+                f"  Stored {len(compressed_entries)} compressed drawers (content_aaak updated)."
             )
         except Exception as e:
             print(f"  Error storing compressed drawers: {e}")

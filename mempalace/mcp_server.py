@@ -29,7 +29,7 @@ from .config import MempalaceConfig
 from .version import __version__
 from .searcher import search_memories
 from .palace_graph import traverse, find_tunnels, graph_stats
-import chromadb
+from .es_client import get_es_collection
 
 from .knowledge_graph import KnowledgeGraph
 
@@ -60,23 +60,9 @@ else:
     _kg = KnowledgeGraph()
 
 
-_client_cache = None
-_collection_cache = None
-
-
 def _get_collection(create=False):
-    """Return the ChromaDB collection, caching the client between calls."""
-    global _client_cache, _collection_cache
-    try:
-        if _client_cache is None:
-            _client_cache = chromadb.PersistentClient(path=_config.palace_path)
-        if create:
-            _collection_cache = _client_cache.get_or_create_collection(_config.collection_name)
-        elif _collection_cache is None:
-            _collection_cache = _client_cache.get_collection(_config.collection_name)
-        return _collection_cache
-    except Exception:
-        return None
+    """Return the ES collection (singleton, cached in es_client)."""
+    return get_es_collection(create=create)
 
 
 def _no_palace():
@@ -214,7 +200,7 @@ def tool_check_duplicate(content: str, threshold: float = 0.9):
     if not col:
         return _no_palace()
     try:
-        results = col.query(
+        results = col.query_vector_only(
             query_texts=[content],
             n_results=5,
             include=["metadatas", "documents", "distances"],
