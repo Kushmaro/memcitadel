@@ -284,16 +284,24 @@ def get_es_collection(create=False):
 
     config = MempalaceConfig()
 
-    if not config.es_cloud_id and not config.es_api_key:
-        logger.error("ES not configured. Set MEMPALACE_ES_CLOUD_ID and MEMPALACE_ES_API_KEY.")
+    if not config.es_api_key or (not config.es_url and not config.es_cloud_id):
+        logger.error("ES not configured. Set ES_URL + ES_KEY (or MEMPALACE_ES_CLOUD_ID + MEMPALACE_ES_API_KEY).")
         return None
 
     try:
         if _es_client is None:
-            _es_client = Elasticsearch(
-                cloud_id=config.es_cloud_id,
-                api_key=config.es_api_key,
-            )
+            if config.es_url:
+                _es_client = Elasticsearch(
+                    hosts=config.es_url,
+                    api_key=config.es_api_key,
+                    request_timeout=120,
+                )
+            else:
+                _es_client = Elasticsearch(
+                    cloud_id=config.es_cloud_id,
+                    api_key=config.es_api_key,
+                    request_timeout=120,
+                )
 
         if _es_collection is None:
             index_name = config.es_index_name

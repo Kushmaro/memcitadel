@@ -11,7 +11,7 @@ from pathlib import Path
 DEFAULT_PALACE_PATH = os.path.expanduser("~/.mempalace/palace")
 DEFAULT_COLLECTION_NAME = "mempalace_drawers"
 DEFAULT_ES_INDEX_NAME = "mempalace_drawers"
-DEFAULT_ES_INFERENCE_ID = "mempalace-embeddings"
+DEFAULT_ES_INFERENCE_ID = ".multilingual-e5-small-elasticsearch"
 
 DEFAULT_TOPIC_WINGS = [
     "emotions",
@@ -105,6 +105,11 @@ class MempalaceConfig:
         return self._file_config.get("collection_name", DEFAULT_COLLECTION_NAME)
 
     @property
+    def es_url(self):
+        """Elasticsearch URL (for direct connection)."""
+        return os.environ.get("ES_URL") or os.environ.get("MEMPALACE_ES_URL") or self._file_config.get("es_url")
+
+    @property
     def es_cloud_id(self):
         """Elasticsearch Serverless cloud ID."""
         return os.environ.get("MEMPALACE_ES_CLOUD_ID") or self._file_config.get("es_cloud_id")
@@ -112,7 +117,7 @@ class MempalaceConfig:
     @property
     def es_api_key(self):
         """Elasticsearch API key."""
-        return os.environ.get("MEMPALACE_ES_API_KEY") or self._file_config.get("es_api_key")
+        return os.environ.get("ES_KEY") or os.environ.get("MEMPALACE_ES_API_KEY") or self._file_config.get("es_api_key")
 
     @property
     def es_index_name(self):
