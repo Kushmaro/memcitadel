@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from mempalace.hooks_cli import (
+from memcitadel.hooks_cli import (
     SAVE_INTERVAL,
     STOP_BLOCK_REASON,
     PRECOMPACT_BLOCK_REASON,

@@ -45,7 +45,7 @@ class TestMineThroughput:
         )
         palace_path = str(tmp_path / "palace")
 
-        from mempalace.miner import mine
+        from memcitadel.miner import mine
 
         start = time.perf_counter()
         mine(project_path, palace_path)
@@ -73,7 +73,7 @@ class TestMineThroughput:
         )
         palace_path = str(tmp_path / "palace")
 
-        from mempalace.miner import mine
+        from memcitadel.miner import mine
 
         rss_samples = []
         stop_sampling = threading.Event()
@@ -105,7 +105,7 @@ class TestChunkThroughput:
     @pytest.mark.parametrize("content_size_kb", [1, 10, 100])
     def test_chunk_text_throughput(self, content_size_kb):
         """Measure chunk_text speed for different content sizes."""
-        from mempalace.miner import chunk_text
+        from memcitadel.miner import chunk_text
 
         gen = PalaceDataGenerator(seed=42)
         # Generate content of target size
@@ -143,7 +143,7 @@ class TestReingestSkipOverhead:
         )
         palace_path = str(tmp_path / "palace")
 
-        from mempalace.miner import mine
+        from memcitadel.miner import mine
 
         # First mine
         mine(project_path, palace_path)

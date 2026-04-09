@@ -36,20 +36,20 @@ def _get_collection(palace_path, create=False):
 
 class TestHandleRequest:
     def test_initialize(self):
-        from mempalace.mcp_server import handle_request
+        from memcitadel.mcp_server import handle_request
 
         resp = handle_request({"method": "initialize", "id": 1, "params": {}})
         assert resp["result"]["serverInfo"]["name"] == "mempalace"
         assert resp["id"] == 1
 
     def test_notifications_initialized_returns_none(self):
-        from mempalace.mcp_server import handle_request
+        from memcitadel.mcp_server import handle_request
 
         resp = handle_request({"method": "notifications/initialized", "id": None, "params": {}})
         assert resp is None
 
     def test_tools_list(self):
-        from mempalace.mcp_server import handle_request
+        from memcitadel.mcp_server import handle_request
 
         resp = handle_request({"method": "tools/list", "id": 2, "params": {}})
         tools = resp["result"]["tools"]
@@ -60,7 +60,7 @@ class TestHandleRequest:
         assert "mempalace_kg_add" in names
 
     def test_unknown_tool(self):
-        from mempalace.mcp_server import handle_request
+        from memcitadel.mcp_server import handle_request
 
         resp = handle_request(
             {
@@ -72,14 +72,14 @@ class TestHandleRequest:
         assert resp["error"]["code"] == -32601
 
     def test_unknown_method(self):
-        from mempalace.mcp_server import handle_request
+        from memcitadel.mcp_server import handle_request
 
         resp = handle_request({"method": "unknown/method", "id": 4, "params": {}})
         assert resp["error"]["code"] == -32601
 
     def test_tools_call_dispatches(self, monkeypatch, config, palace_path, seeded_kg):
         _patch_mcp_server(monkeypatch, config, seeded_kg)
-        from mempalace.mcp_server import handle_request
+        from memcitadel.mcp_server import handle_request
 
         # Create a collection so status works
         _client, _col = _get_collection(palace_path, create=True)
@@ -105,7 +105,7 @@ class TestReadTools:
         _patch_mcp_server(monkeypatch, config, kg)
         _client, _col = _get_collection(palace_path, create=True)
         del _client
-        from mempalace.mcp_server import tool_status
+        from memcitadel.mcp_server import tool_status
 
         result = tool_status()
         assert result["total_drawers"] == 0
@@ -113,7 +113,7 @@ class TestReadTools:
 
     def test_status_with_data(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        from mempalace.mcp_server import tool_status
+        from memcitadel.mcp_server import tool_status
 
         result = tool_status()
         assert result["total_drawers"] == 4
@@ -122,7 +122,7 @@ class TestReadTools:
 
     def test_list_wings(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        from mempalace.mcp_server import tool_list_wings
+        from memcitadel.mcp_server import tool_list_wings
 
         result = tool_list_wings()
         assert result["wings"]["project"] == 3
@@ -130,7 +130,7 @@ class TestReadTools:
 
     def test_list_rooms_all(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        from mempalace.mcp_server import tool_list_rooms
+        from memcitadel.mcp_server import tool_list_rooms
 
         result = tool_list_rooms()
         assert "backend" in result["rooms"]
@@ -139,7 +139,7 @@ class TestReadTools:
 
     def test_list_rooms_filtered(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        from mempalace.mcp_server import tool_list_rooms
+        from memcitadel.mcp_server import tool_list_rooms
 
         result = tool_list_rooms(wing="project")
         assert "backend" in result["rooms"]
@@ -147,7 +147,7 @@ class TestReadTools:
 
     def test_get_taxonomy(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        from mempalace.mcp_server import tool_get_taxonomy
+        from memcitadel.mcp_server import tool_get_taxonomy
 
         result = tool_get_taxonomy()
         assert result["taxonomy"]["project"]["backend"] == 2
@@ -156,7 +156,7 @@ class TestReadTools:
 
     def test_no_palace_returns_error(self, monkeypatch, config, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        from mempalace.mcp_server import tool_status
+        from memcitadel.mcp_server import tool_status
 
         result = tool_status()
         assert "error" in result
@@ -168,7 +168,7 @@ class TestReadTools:
 class TestSearchTool:
     def test_search_basic(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        from mempalace.mcp_server import tool_search
+        from memcitadel.mcp_server import tool_search
 
         result = tool_search(query="JWT authentication tokens")
         assert "results" in result
@@ -179,14 +179,14 @@ class TestSearchTool:
 
     def test_search_with_wing_filter(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        from mempalace.mcp_server import tool_search
+        from memcitadel.mcp_server import tool_search
 
         result = tool_search(query="planning", wing="notes")
         assert all(r["wing"] == "notes" for r in result["results"])
 
     def test_search_with_room_filter(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        from mempalace.mcp_server import tool_search
+        from memcitadel.mcp_server import tool_search
 
         result = tool_search(query="database", room="backend")
         assert all(r["room"] == "backend" for r in result["results"])
@@ -200,7 +200,7 @@ class TestWriteTools:
         _patch_mcp_server(monkeypatch, config, kg)
         _client, _col = _get_collection(palace_path, create=True)
         del _client
-        from mempalace.mcp_server import tool_add_drawer
+        from memcitadel.mcp_server import tool_add_drawer
 
         result = tool_add_drawer(
             wing="test_wing",
@@ -216,7 +216,7 @@ class TestWriteTools:
         _patch_mcp_server(monkeypatch, config, kg)
         _client, _col = _get_collection(palace_path, create=True)
         del _client
-        from mempalace.mcp_server import tool_add_drawer
+        from memcitadel.mcp_server import tool_add_drawer
 
         content = "This is a unique test memory about Rust ownership and borrowing."
         result1 = tool_add_drawer(wing="w", room="r", content=content)
@@ -228,7 +228,7 @@ class TestWriteTools:
 
     def test_delete_drawer(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        from mempalace.mcp_server import tool_delete_drawer
+        from memcitadel.mcp_server import tool_delete_drawer
 
         result = tool_delete_drawer("drawer_proj_backend_aaa")
         assert result["success"] is True
@@ -236,14 +236,14 @@ class TestWriteTools:
 
     def test_delete_drawer_not_found(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        from mempalace.mcp_server import tool_delete_drawer
+        from memcitadel.mcp_server import tool_delete_drawer
 
         result = tool_delete_drawer("nonexistent_drawer")
         assert result["success"] is False
 
     def test_check_duplicate(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        from mempalace.mcp_server import tool_check_duplicate
+        from memcitadel.mcp_server import tool_check_duplicate
 
         # Exact match text from seeded_collection should be flagged
         result = tool_check_duplicate(
@@ -267,7 +267,7 @@ class TestWriteTools:
 class TestKGTools:
     def test_kg_add(self, monkeypatch, config, palace_path, kg):
         _patch_mcp_server(monkeypatch, config, kg)
-        from mempalace.mcp_server import tool_kg_add
+        from memcitadel.mcp_server import tool_kg_add
 
         result = tool_kg_add(
             subject="Alice",
@@ -279,14 +279,14 @@ class TestKGTools:
 
     def test_kg_query(self, monkeypatch, config, palace_path, seeded_kg):
         _patch_mcp_server(monkeypatch, config, seeded_kg)
-        from mempalace.mcp_server import tool_kg_query
+        from memcitadel.mcp_server import tool_kg_query
 
         result = tool_kg_query(entity="Max")
         assert result["count"] > 0
 
     def test_kg_invalidate(self, monkeypatch, config, palace_path, seeded_kg):
         _patch_mcp_server(monkeypatch, config, seeded_kg)
-        from mempalace.mcp_server import tool_kg_invalidate
+        from memcitadel.mcp_server import tool_kg_invalidate
 
         result = tool_kg_invalidate(
             subject="Max",
@@ -298,14 +298,14 @@ class TestKGTools:
 
     def test_kg_timeline(self, monkeypatch, config, palace_path, seeded_kg):
         _patch_mcp_server(monkeypatch, config, seeded_kg)
-        from mempalace.mcp_server import tool_kg_timeline
+        from memcitadel.mcp_server import tool_kg_timeline
 
         result = tool_kg_timeline(entity="Alice")
         assert result["count"] > 0
 
     def test_kg_stats(self, monkeypatch, config, palace_path, seeded_kg):
         _patch_mcp_server(monkeypatch, config, seeded_kg)
-        from mempalace.mcp_server import tool_kg_stats
+        from memcitadel.mcp_server import tool_kg_stats
 
         result = tool_kg_stats()
         assert result["entities"] >= 4
@@ -319,7 +319,7 @@ class TestDiaryTools:
         _patch_mcp_server(monkeypatch, config, kg)
         _client, _col = _get_collection(palace_path, create=True)
         del _client
-        from mempalace.mcp_server import tool_diary_write, tool_diary_read
+        from memcitadel.mcp_server import tool_diary_write, tool_diary_read
 
         w = tool_diary_write(
             agent_name="TestAgent",
@@ -338,7 +338,7 @@ class TestDiaryTools:
         _patch_mcp_server(monkeypatch, config, kg)
         _client, _col = _get_collection(palace_path, create=True)
         del _client
-        from mempalace.mcp_server import tool_diary_read
+        from memcitadel.mcp_server import tool_diary_read
 
         r = tool_diary_read(agent_name="Nobody")
         assert r["entries"] == []

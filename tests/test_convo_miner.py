@@ -2,7 +2,7 @@ import os
 import tempfile
 import shutil
 import chromadb
-from mempalace.convo_miner import mine_convos
+from memcitadel.convo_miner import mine_convos
 
 
 def test_convo_mining():

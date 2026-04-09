@@ -1,7 +1,7 @@
 import os
 import json
 import tempfile
-from mempalace.config import MempalaceConfig
+from memcitadel.config import MempalaceConfig
 
 
 def test_default_config():
