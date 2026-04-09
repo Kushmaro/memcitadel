@@ -8,7 +8,7 @@
 
 Imagine MemPalace — the elegant Wings/Rooms/Halls architecture for AI memory — but without the ceiling. No local ChromaDB limits. No single-machine bottleneck. Every conversation, every decision, every document your organization has ever produced, searchable in milliseconds with hybrid BM25 + semantic retrieval. Per-team isolation. Per-project retention policies. Enterprise security.
 
-**That's MemCitadel.** A fork of [MemPalace](https://github.com/milla-jovovich/mempalace) rebuilt on Elasticsearch Serverless. Same spatial memory model. Infinite scale.
+**That's MemCitadel.** A fork of [MemPalace](https://github.com/milla-jovovich/mempalace) rebuilt on Elasticsearch. Same spatial memory model. Infinite scale.
 
 <br>
 
@@ -18,13 +18,13 @@ Imagine MemPalace — the elegant Wings/Rooms/Halls architecture for AI memory �
 
 ## What Is This?
 
-MemCitadel is an enterprise-scale RAG system that gives AI agents persistent, structured memory backed by Elasticsearch Serverless. It takes MemPalace's "Memory Palace" architecture — where information is organized into **wings** (projects, teams, people), **rooms** (topics), and **drawers** (verbatim content) — and runs it on infrastructure built for millions of documents.
+MemCitadel is an enterprise-scale RAG system that gives AI agents persistent, structured memory backed by Elasticsearch. It takes MemPalace's "Memory Palace" architecture — where information is organized into **wings** (projects, teams, people), **rooms** (topics), and **drawers** (verbatim content) — and runs it on infrastructure built for millions of documents.
 
 **What changed from MemPalace:**
 
 | | MemPalace | MemCitadel |
 |--|-----------|------------|
-| **Storage** | ChromaDB (local files) | Elasticsearch Serverless (cloud) |
+| **Storage** | ChromaDB (local files) | Elasticsearch (cloud) |
 | **Search** | Vector similarity only | Hybrid: BM25 + semantic via RRF |
 | **Embeddings** | Local model (all-MiniLM-L6-v2) | ES Inference API (server-side) |
 | **Architecture** | Single flat collection | Index-per-wing (physical isolation) |
@@ -120,7 +120,7 @@ The spatial model is inherited from MemPalace. Information is organized like a b
 ### Prerequisites
 
 - Python 3.9+
-- An Elasticsearch Serverless deployment ([create one](https://cloud.elastic.co/))
+- An Elasticsearch deployment ([Elastic Cloud](https://cloud.elastic.co/) or self-hosted)
 - An ES API key with index permissions
 
 ### Install
@@ -278,7 +278,7 @@ Wake-up cost: ~170 tokens for L0 + L1. The rest of the context window stays free
 
 MemPalace is designed as a local-first personal memory tool. MemCitadel takes the same concepts and rebuilds the data layer for production:
 
-- **ChromaDB → Elasticsearch Serverless**: From a local embedded database to a managed cloud service built for scale. Hybrid search (BM25 + semantic) instead of vector-only.
+- **ChromaDB → Elasticsearch**: From a local embedded database to a managed cloud service built for scale. Hybrid search (BM25 + semantic) instead of vector-only.
 - **Single collection → Index-per-wing**: Physical isolation between wings. Independent scaling, ILM, and security per wing.
 - **Local embeddings → ES Inference API**: No local ML model. Embeddings generated server-side. Swap models by changing the inference endpoint, not the code.
 - **Python counting → ES aggregations**: Status and taxonomy queries use native ES aggregations instead of pulling all metadata into Python.
