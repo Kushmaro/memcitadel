@@ -70,10 +70,6 @@ STRUCTURE_MAPPING = {
     }
 }
 
-# Legacy single-index name (for backward compat detection)
-LEGACY_INDEX = "mempalace_drawers"
-
-
 def _build_wing_mapping(config):
     """Return wing index mapping with inference_id from config."""
     mapping = copy.deepcopy(WING_INDEX_MAPPING)
@@ -546,7 +542,7 @@ _palace_client = None
 
 
 def get_es_collection(create=False):
-    """Return a cached PalaceClient (or legacy ESCollection for old single-index setups)."""
+    """Return a cached PalaceClient instance. Creates structure index if create=True."""
     global _es_client, _palace_client
 
     config = MempalaceConfig()
@@ -571,24 +567,12 @@ def get_es_collection(create=False):
                 )
 
         if _palace_client is None:
-            wing_pattern = f"{config.es_index_prefix}*"
-            has_wing_indices = _es_client.indices.exists(index=wing_pattern)
-            has_legacy = _es_client.indices.exists(index=LEGACY_INDEX)
-
-            if has_wing_indices or create:
-                # New mode: per-wing indices
-                if create:
-                    # Ensure structure index exists
-                    if not _es_client.indices.exists(index=config.es_structure_index):
-                        _es_client.indices.create(index=config.es_structure_index, body=STRUCTURE_MAPPING)
-                _palace_client = PalaceClient(_es_client, config)
-            elif has_legacy:
-                # Legacy mode: single flat index
-                _palace_client = ESCollection(_es_client, LEGACY_INDEX, config)
-            elif not create:
+            if create:
+                if not _es_client.indices.exists(index=config.es_structure_index):
+                    _es_client.indices.create(index=config.es_structure_index, body=STRUCTURE_MAPPING)
+            elif not _es_client.indices.exists(index=f"{config.es_index_prefix}*"):
                 return None
-            else:
-                _palace_client = PalaceClient(_es_client, config)
+            _palace_client = PalaceClient(_es_client, config)
 
         return _palace_client
     except Exception as e:

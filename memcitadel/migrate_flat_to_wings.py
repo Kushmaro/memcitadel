@@ -18,10 +18,12 @@ from elasticsearch import Elasticsearch, NotFoundError
 
 from .config import MempalaceConfig
 from .es_client import (
-    LEGACY_INDEX,
     STRUCTURE_MAPPING,
     _build_wing_mapping,
 )
+
+# The old flat index name to migrate from
+LEGACY_INDEX = "mempalace_drawers"
 
 
 def migrate(batch_size=500):
