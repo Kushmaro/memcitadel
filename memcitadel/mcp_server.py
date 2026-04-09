@@ -83,12 +83,11 @@ def tool_status():
     wings = {}
     rooms = {}
     try:
-        all_meta = col.get(include=["metadatas"], limit=10000)["metadatas"]
-        for m in all_meta:
-            w = m.get("wing", "unknown")
-            r = m.get("room", "unknown")
-            wings[w] = wings.get(w, 0) + 1
-            rooms[r] = rooms.get(r, 0) + 1
+        taxonomy = col.taxonomy() if hasattr(col, "taxonomy") else {}
+        for w, w_rooms in taxonomy.items():
+            wings[w] = sum(w_rooms.values())
+            for r, c in w_rooms.items():
+                rooms[r] = rooms.get(r, 0) + c
     except Exception:
         pass
     return {
@@ -140,10 +139,14 @@ def tool_list_wings():
         return _no_palace()
     wings = {}
     try:
-        all_meta = col.get(include=["metadatas"], limit=10000)["metadatas"]
-        for m in all_meta:
-            w = m.get("wing", "unknown")
-            wings[w] = wings.get(w, 0) + 1
+        if hasattr(col, "list_wing_names"):
+            for w in col.list_wing_names():
+                wings[w] = col.wing_count(w)
+        else:
+            all_meta = col.get(include=["metadatas"], limit=10000)["metadatas"]
+            for m in all_meta:
+                w = m.get("wing", "unknown")
+                wings[w] = wings.get(w, 0) + 1
     except Exception:
         pass
     return {"wings": wings}
@@ -155,13 +158,16 @@ def tool_list_rooms(wing: str = None):
         return _no_palace()
     rooms = {}
     try:
-        kwargs = {"include": ["metadatas"], "limit": 10000}
-        if wing:
-            kwargs["where"] = {"wing": wing}
-        all_meta = col.get(**kwargs)["metadatas"]
-        for m in all_meta:
-            r = m.get("room", "unknown")
-            rooms[r] = rooms.get(r, 0) + 1
+        if hasattr(col, "room_aggregation"):
+            rooms = col.room_aggregation(wing)
+        else:
+            kwargs = {"include": ["metadatas"], "limit": 10000}
+            if wing:
+                kwargs["where"] = {"wing": wing}
+            all_meta = col.get(**kwargs)["metadatas"]
+            for m in all_meta:
+                r = m.get("room", "unknown")
+                rooms[r] = rooms.get(r, 0) + 1
     except Exception:
         pass
     return {"wing": wing or "all", "rooms": rooms}
@@ -173,13 +179,16 @@ def tool_get_taxonomy():
         return _no_palace()
     taxonomy = {}
     try:
-        all_meta = col.get(include=["metadatas"], limit=10000)["metadatas"]
-        for m in all_meta:
-            w = m.get("wing", "unknown")
-            r = m.get("room", "unknown")
-            if w not in taxonomy:
-                taxonomy[w] = {}
-            taxonomy[w][r] = taxonomy[w].get(r, 0) + 1
+        if hasattr(col, "taxonomy"):
+            taxonomy = col.taxonomy()
+        else:
+            all_meta = col.get(include=["metadatas"], limit=10000)["metadatas"]
+            for m in all_meta:
+                w = m.get("wing", "unknown")
+                r = m.get("room", "unknown")
+                if w not in taxonomy:
+                    taxonomy[w] = {}
+                taxonomy[w][r] = taxonomy[w].get(r, 0) + 1
     except Exception:
         pass
     return {"taxonomy": taxonomy}
