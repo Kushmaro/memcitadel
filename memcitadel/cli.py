@@ -350,9 +350,7 @@ def cmd_compress(args):
                         "original_tokens": stats["original_tokens_est"],
                     },
                 )
-            print(
-                f"  Stored {len(compressed_entries)} compressed drawers (content_aaak updated)."
-            )
+            print(f"  Stored {len(compressed_entries)} compressed drawers (content_aaak updated).")
         except Exception as e:
             print(f"  Error storing compressed drawers: {e}")
             sys.exit(1)

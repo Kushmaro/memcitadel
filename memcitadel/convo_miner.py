@@ -17,6 +17,7 @@ from collections import defaultdict
 
 from .es_client import get_es_collection
 from .normalize import normalize
+from .palace import SKIP_DIRS
 
 
 # File types that might contain conversations
@@ -206,7 +207,6 @@ def file_already_mined(collection, source_file: str) -> bool:
         return len(results.get("ids", [])) > 0
     except Exception:
         return False
-
 
 
 # =============================================================================

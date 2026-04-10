@@ -206,9 +206,7 @@ class TestPalaceClientCRUD:
         assert result["metadatas"][0]["room"] == "auth"
 
     def test_get_by_wing_filter(self, palace):
-        result = palace.get(
-            where={"wing": "test_wing_a"}, include=["documents", "metadatas"]
-        )
+        result = palace.get(where={"wing": "test_wing_a"}, include=["documents", "metadatas"])
         assert len(result["ids"]) >= 1
         assert all(m["wing"] == "test_wing_a" for m in result["metadatas"])
 
@@ -363,7 +361,9 @@ class TestStructureIndex:
         assert resp["_source"]["name"] == "test_wing_a"
 
     def test_room_registered(self, palace, es_client):
-        resp = es_client.get(index=palace._structure_index, id="room:test_wing_a:auth", ignore=[404])
+        resp = es_client.get(
+            index=palace._structure_index, id="room:test_wing_a:auth", ignore=[404]
+        )
         assert resp.get("found", False)
         assert resp["_source"]["type"] == "room"
         assert resp["_source"]["wing"] == "test_wing_a"

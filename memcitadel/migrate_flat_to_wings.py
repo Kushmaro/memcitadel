@@ -14,7 +14,7 @@ import argparse
 import sys
 from collections import defaultdict
 
-from elasticsearch import Elasticsearch, NotFoundError
+from elasticsearch import Elasticsearch
 
 from .config import MempalaceConfig
 from .es_client import (
@@ -37,7 +37,9 @@ def migrate(batch_size=500):
     if config.es_url:
         es = Elasticsearch(hosts=config.es_url, api_key=config.es_api_key, request_timeout=120)
     else:
-        es = Elasticsearch(cloud_id=config.es_cloud_id, api_key=config.es_api_key, request_timeout=120)
+        es = Elasticsearch(
+            cloud_id=config.es_cloud_id, api_key=config.es_api_key, request_timeout=120
+        )
 
     print(f"\n{'=' * 55}")
     print("  MemCitadel Migration: Flat Index → Per-Wing Indices")
@@ -149,7 +151,7 @@ def migrate(batch_size=500):
         print(f"    {prefix}{wing}: {wing_count} drawers, {room_count} rooms")
 
     if total == new_total:
-        print(f"\n  Migration complete. Counts match.")
+        print("\n  Migration complete. Counts match.")
     else:
         print(f"\n  WARNING: Count mismatch! Legacy={total}, New={new_total}")
 

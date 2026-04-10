@@ -70,6 +70,7 @@ STRUCTURE_MAPPING = {
     }
 }
 
+
 def _build_wing_mapping(config):
     """Return wing index mapping with inference_id from config."""
     mapping = copy.deepcopy(WING_INDEX_MAPPING)
@@ -178,9 +179,7 @@ def _hits_to_query_format(hits, include):
     if "distances" in include:
         if hits:
             max_score = max(h["_score"] for h in hits) or 1.0
-            result["distances"] = [
-                [round(1.0 - (h["_score"] / max_score), 4) for h in hits]
-            ]
+            result["distances"] = [[round(1.0 - (h["_score"] / max_score), 4) for h in hits]]
         else:
             result["distances"] = [[]]
 
@@ -196,11 +195,24 @@ def _include_to_source(include):
     if "documents" in include:
         fields.extend(["content_raw", "content_aaak"])
     if "metadatas" in include:
-        fields.extend([
-            "wing", "room", "hall", "source_file", "chunk_index",
-            "added_by", "filed_at", "date", "topic", "type",
-            "agent", "ingest_mode", "extract_mode", "source_mtime",
-        ])
+        fields.extend(
+            [
+                "wing",
+                "room",
+                "hall",
+                "source_file",
+                "chunk_index",
+                "added_by",
+                "filed_at",
+                "date",
+                "topic",
+                "type",
+                "agent",
+                "ingest_mode",
+                "extract_mode",
+                "source_mtime",
+            ]
+        )
     return fields if fields else True
 
 
@@ -355,10 +367,16 @@ class PalaceClient:
             body = {"type": "wing", "name": name, "created_at": datetime.now().isoformat()}
         else:
             doc_id = f"room:{wing}:{name}"
-            body = {"type": "room", "name": name, "wing": wing, "created_at": datetime.now().isoformat()}
+            body = {
+                "type": "room",
+                "name": name,
+                "wing": wing,
+                "created_at": datetime.now().isoformat(),
+            }
 
-        self.es.index(index=self._structure_index, id=doc_id, body=body, op_type="create",
-                      ignore=[409])  # ignore conflict if already exists
+        self.es.index(
+            index=self._structure_index, id=doc_id, body=body, op_type="create", ignore=[409]
+        )  # ignore conflict if already exists
 
     # --- ChromaDB-compatible interface ---
 
@@ -556,7 +574,9 @@ def get_es_collection(create=False):
     config = MempalaceConfig()
 
     if not config.es_api_key or (not config.es_url and not config.es_cloud_id):
-        logger.error("ES not configured. Set ES_URL + ES_KEY (or MEMPALACE_ES_CLOUD_ID + MEMPALACE_ES_API_KEY).")
+        logger.error(
+            "ES not configured. Set ES_URL + ES_KEY (or MEMPALACE_ES_CLOUD_ID + MEMPALACE_ES_API_KEY)."
+        )
         return None
 
     try:
@@ -577,7 +597,9 @@ def get_es_collection(create=False):
         if _palace_client is None:
             if create:
                 if not _es_client.indices.exists(index=config.es_structure_index):
-                    _es_client.indices.create(index=config.es_structure_index, body=STRUCTURE_MAPPING)
+                    _es_client.indices.create(
+                        index=config.es_structure_index, body=STRUCTURE_MAPPING
+                    )
             elif not _es_client.indices.exists(index=f"{config.es_index_prefix}*"):
                 return None
             _palace_client = PalaceClient(_es_client, config)
