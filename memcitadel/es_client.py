@@ -484,6 +484,14 @@ class PalaceClient:
         except NotFoundError:
             pass
 
+    def update_aaak(self, doc_id, aaak_text, wing=None, extra_fields=None):
+        """Partial update: set content_aaak on an existing document without touching content_raw."""
+        index = self._wing_index(wing) if wing else self._wildcard
+        body = {"content_aaak": aaak_text}
+        if extra_fields:
+            body.update(extra_fields)
+        self.es.update(index=index, id=doc_id, body={"doc": body}, refresh="wait_for")
+
     # --- Aggregation helpers (for mcp_server.py optimization) ---
 
     def list_wing_names(self):

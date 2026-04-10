@@ -298,7 +298,7 @@ def cmd_compress(args):
         stats = dialect.compression_stats(doc, compressed)
 
         total_original += stats["original_chars"]
-        total_compressed += stats["compressed_chars"]
+        total_compressed += stats["summary_chars"]
 
         compressed_entries.append((doc_id, compressed, meta, stats))
 
@@ -308,7 +308,7 @@ def cmd_compress(args):
             source = Path(meta.get("source_file", "?")).name
             print(f"  [{wing_name}/{room_name}] {source}")
             print(
-                f"    {stats['original_tokens']}t -> {stats['compressed_tokens']}t ({stats['ratio']:.1f}x)"
+                f"    {stats['original_tokens_est']}t -> {stats['summary_tokens_est']}t ({stats['size_ratio']:.1f}x)"
             )
             print(f"    {compressed}")
             print()
@@ -317,13 +317,15 @@ def cmd_compress(args):
     if not args.dry_run:
         try:
             for doc_id, compressed, meta, stats in compressed_entries:
-                comp_meta = dict(meta)
-                comp_meta["compression_ratio"] = round(stats["ratio"], 1)
-                comp_meta["original_tokens"] = stats["original_tokens"]
-                col.upsert(
-                    ids=[doc_id],
-                    documents=[compressed],
-                    metadatas=[comp_meta],
+                wing = meta.get("wing")
+                col.update_aaak(
+                    doc_id=doc_id,
+                    aaak_text=compressed,
+                    wing=wing,
+                    extra_fields={
+                        "compression_ratio": round(stats["size_ratio"], 1),
+                        "original_tokens": stats["original_tokens_est"],
+                    },
                 )
             print(
                 f"  Stored {len(compressed_entries)} compressed drawers (content_aaak updated)."
