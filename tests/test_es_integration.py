@@ -11,7 +11,6 @@ Run with: pytest tests/test_es_integration.py -v
 """
 
 import os
-import time
 import uuid
 
 import pytest
