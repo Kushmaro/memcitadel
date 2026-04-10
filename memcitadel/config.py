@@ -159,7 +159,11 @@ class MempalaceConfig:
     @property
     def es_url(self):
         """Elasticsearch URL (for direct connection)."""
-        return os.environ.get("ES_URL") or os.environ.get("MEMPALACE_ES_URL") or self._file_config.get("es_url")
+        return (
+            os.environ.get("ES_URL")
+            or os.environ.get("MEMPALACE_ES_URL")
+            or self._file_config.get("es_url")
+        )
 
     @property
     def es_cloud_id(self):
@@ -169,38 +173,38 @@ class MempalaceConfig:
     @property
     def es_api_key(self):
         """Elasticsearch API key."""
-        return os.environ.get("ES_KEY") or os.environ.get("MEMPALACE_ES_API_KEY") or self._file_config.get("es_api_key")
+        return (
+            os.environ.get("ES_KEY")
+            or os.environ.get("MEMPALACE_ES_API_KEY")
+            or self._file_config.get("es_api_key")
+        )
 
     @property
     def es_index_name(self):
         """Elasticsearch index name."""
-        return (
-            os.environ.get("MEMPALACE_ES_INDEX")
-            or self._file_config.get("es_index_name", DEFAULT_ES_INDEX_NAME)
+        return os.environ.get("MEMPALACE_ES_INDEX") or self._file_config.get(
+            "es_index_name", DEFAULT_ES_INDEX_NAME
         )
 
     @property
     def es_index_prefix(self):
         """Prefix for per-wing ES indices (e.g. mempalace_wing_)."""
-        return (
-            os.environ.get("MEMPALACE_ES_INDEX_PREFIX")
-            or self._file_config.get("es_index_prefix", DEFAULT_ES_INDEX_PREFIX)
+        return os.environ.get("MEMPALACE_ES_INDEX_PREFIX") or self._file_config.get(
+            "es_index_prefix", DEFAULT_ES_INDEX_PREFIX
         )
 
     @property
     def es_structure_index(self):
         """ES index for wing/room structure metadata."""
-        return (
-            os.environ.get("MEMPALACE_ES_STRUCTURE_INDEX")
-            or self._file_config.get("es_structure_index", DEFAULT_ES_STRUCTURE_INDEX)
+        return os.environ.get("MEMPALACE_ES_STRUCTURE_INDEX") or self._file_config.get(
+            "es_structure_index", DEFAULT_ES_STRUCTURE_INDEX
         )
 
     @property
     def es_inference_id(self):
         """Elasticsearch inference endpoint ID for embeddings."""
-        return (
-            os.environ.get("MEMPALACE_ES_INFERENCE_ID")
-            or self._file_config.get("es_inference_id", DEFAULT_ES_INFERENCE_ID)
+        return os.environ.get("MEMPALACE_ES_INFERENCE_ID") or self._file_config.get(
+            "es_inference_id", DEFAULT_ES_INFERENCE_ID
         )
 
     @property

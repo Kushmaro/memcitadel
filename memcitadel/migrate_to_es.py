@@ -85,7 +85,7 @@ def migrate(palace_path: str = None, batch_size: int = 500):
             error_str = str(e)
             if "429" in error_str:
                 # Rate limited — back off and retry
-                print(f"  Rate limited, backing off...")
+                print("  Rate limited, backing off...")
                 time.sleep(5)
                 try:
                     es_col.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
@@ -101,7 +101,7 @@ def migrate(palace_path: str = None, batch_size: int = 500):
         offset += len(batch_ids)
 
     print(f"\n{'=' * 55}")
-    print(f"  Migration complete.")
+    print("  Migration complete.")
     print(f"  Migrated: {migrated}")
     if errors:
         print(f"  Errors:   {errors}")

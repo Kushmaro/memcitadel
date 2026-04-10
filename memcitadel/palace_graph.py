@@ -16,7 +16,6 @@ No external graph DB needed — built from ChromaDB metadata.
 """
 
 from collections import defaultdict, Counter
-from .config import MempalaceConfig
 
 from .es_client import get_es_collection
 

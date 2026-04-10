@@ -17,7 +17,7 @@ from collections import defaultdict
 
 from .es_client import get_es_collection
 
-from .palace import SKIP_DIRS, get_collection, file_already_mined
+from .palace import SKIP_DIRS
 
 READABLE_EXTENSIONS = {
     ".txt",
@@ -395,7 +395,6 @@ def file_already_mined(collection, source_file: str) -> bool:
         return False
 
 
-
 def add_drawer(
     collection, wing: str, room: str, content: str, source_file: str, chunk_index: int, agent: str
 ):
@@ -642,7 +641,7 @@ def status(palace_path: str):
     """Show what's been filed in the palace."""
     col = get_es_collection()
     if not col:
-        print(f"\n  No palace found")
+        print("\n  No palace found")
         print("  Run: mempalace init <dir> then mempalace mine <dir>")
         return
 
