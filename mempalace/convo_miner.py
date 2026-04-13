@@ -16,7 +16,13 @@ from datetime import datetime
 from collections import defaultdict
 
 from .normalize import normalize
-from .palace import SKIP_DIRS, get_collection, file_already_mined, mine_lock
+from .palace import (
+    NORMALIZE_VERSION,
+    SKIP_DIRS,
+    file_already_mined,
+    get_collection,
+    mine_lock,
+)
 
 
 # File types that might contain conversations
@@ -51,6 +57,7 @@ def _register_file(collection, source_file: str, wing: str, agent: str):
                 "added_by": agent,
                 "filed_at": datetime.now().isoformat(),
                 "ingest_mode": "registry",
+                "normalize_version": NORMALIZE_VERSION,
             }
         ],
     )
@@ -273,7 +280,11 @@ def scan_convos(convo_dir: str) -> list:
 
 
 def _file_chunks_locked(collection, source_file, chunks, wing, room, agent, extract_mode):
-    """Acquire the per-file lock, double-check mined status, and upsert chunks.
+    """Lock the source file, purge stale drawers, and upsert fresh chunks.
+
+    Combines the per-file serialization that prevents concurrent agents from
+    duplicating work (via mine_lock) with the normalize-version rebuild
+    contract (purge-before-insert so pre-v2 drawers don't survive).
 
     Returns (drawers_added, room_counts_delta, skipped).
     """
@@ -281,8 +292,18 @@ def _file_chunks_locked(collection, source_file, chunks, wing, room, agent, extr
     drawers_added = 0
     with mine_lock(source_file):
         # Re-check after lock — another agent may have just finished this file
+        # at the current schema. A stale-version hit here returns False, so we
+        # still fall through to the purge+rebuild path below.
         if file_already_mined(collection, source_file):
             return 0, room_counts_delta, True
+
+        # Purge stale drawers first. When the normalize schema bumps,
+        # file_already_mined() returned False for pre-v2 drawers — clean
+        # them out so the source doesn't end up with mixed old/new drawers.
+        try:
+            collection.delete(where={"source_file": source_file})
+        except Exception:
+            pass
 
         for chunk in chunks:
             chunk_room = chunk.get("memory_type", room) if extract_mode == "general" else room
@@ -303,6 +324,7 @@ def _file_chunks_locked(collection, source_file, chunks, wing, room, agent, extr
                             "filed_at": datetime.now().isoformat(),
                             "ingest_mode": "convos",
                             "extract_mode": extract_mode,
+                            "normalize_version": NORMALIZE_VERSION,
                         }
                     ],
                 )
@@ -416,7 +438,8 @@ def mine_convos(
         if extract_mode != "general":
             room_counts[room] += 1
 
-        # File each chunk — lock to prevent concurrent agents duplicating
+        # Lock + purge stale + file fresh chunks. Lock serializes concurrent
+        # agents; purge removes pre-v2 drawers so the schema bump applies.
         drawers_added, room_delta, skipped = _file_chunks_locked(
             collection, source_file, chunks, wing, room, agent, extract_mode
         )

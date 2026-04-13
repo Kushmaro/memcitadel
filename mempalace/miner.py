@@ -15,7 +15,13 @@ from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 
-from .palace import SKIP_DIRS, get_collection, file_already_mined, mine_lock
+from .palace import (
+    NORMALIZE_VERSION,
+    SKIP_DIRS,
+    file_already_mined,
+    get_collection,
+    mine_lock,
+)
 
 READABLE_EXTENSIONS = {
     ".txt",
@@ -381,6 +387,7 @@ def add_drawer(
             "chunk_index": chunk_index,
             "added_by": agent,
             "filed_at": datetime.now().isoformat(),
+            "normalize_version": NORMALIZE_VERSION,
         }
         # Store file mtime so we can detect modifications later.
         try:
