@@ -16,8 +16,7 @@ import time
 try:
     import chromadb
 except ImportError:
-    print("Error: chromadb is required for migration. Install it with: pip install chromadb")
-    sys.exit(1)
+    chromadb = None
 
 from .backends.base import PalaceRef
 from .backends.elasticsearch import ElasticsearchBackend
@@ -26,6 +25,10 @@ from .config import MempalaceConfig
 
 def migrate(palace_path: str = None, batch_size: int = 500):
     """Migrate all drawers from ChromaDB to Elasticsearch."""
+    if chromadb is None:
+        print("Error: chromadb is required for migration. Install it with: pip install chromadb")
+        sys.exit(1)
+
     config = MempalaceConfig()
     palace_path = palace_path or config.palace_path
 
