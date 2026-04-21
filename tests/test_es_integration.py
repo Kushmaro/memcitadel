@@ -47,23 +47,28 @@ def es_client():
 
 @pytest.fixture(scope="module")
 def palace(es_client, test_prefix, monkeypatch_module):
-    """A PalaceClient with unique test indices."""
+    """An ESCollection (drawers mode) with unique test indices."""
+    from mempalace.backends.elasticsearch import ESCollection, STRUCTURE_MAPPING
     from mempalace.config import MempalaceConfig
-    from mempalace.es_client import PalaceClient, STRUCTURE_MAPPING
 
-    config = MempalaceConfig()
-    # Override prefixes to use test-specific indices
-    config._test_prefix = test_prefix
     structure_index = test_prefix.replace("_wing_", "_structure")
+    config = MempalaceConfig()
+    # Override prefixes to use test-specific indices without touching global config
+    monkeypatch_module.setattr(type(config), "es_index_prefix", property(lambda self: test_prefix))
+    monkeypatch_module.setattr(
+        type(config), "es_structure_index", property(lambda self: structure_index)
+    )
 
     # Create structure index
     if not es_client.indices.exists(index=structure_index):
         es_client.indices.create(index=structure_index, body=STRUCTURE_MAPPING)
 
-    client = PalaceClient(es_client, config)
-    client._prefix = test_prefix
-    client._wildcard = f"{test_prefix}*"
-    client._structure_index = structure_index
+    client = ESCollection(
+        es=es_client,
+        config=config,
+        collection_name=ESCollection.DRAWERS_NAME,
+        create=True,
+    )
 
     yield client
 
@@ -92,28 +97,28 @@ def monkeypatch_module():
 
 class TestExtractWingFromWhere:
     def test_none(self):
-        from mempalace.es_client import _extract_wing_from_where
+        from mempalace.backends.elasticsearch import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where(None)
         assert wing is None
         assert remaining is None
 
     def test_empty_dict(self):
-        from mempalace.es_client import _extract_wing_from_where
+        from mempalace.backends.elasticsearch import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where({})
         assert wing is None
         assert remaining is None
 
     def test_simple_wing(self):
-        from mempalace.es_client import _extract_wing_from_where
+        from mempalace.backends.elasticsearch import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where({"wing": "code"})
         assert wing == "code"
         assert remaining is None
 
     def test_wing_and_room(self):
-        from mempalace.es_client import _extract_wing_from_where
+        from mempalace.backends.elasticsearch import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where(
             {"$and": [{"wing": "code"}, {"room": "testing"}]}
@@ -122,28 +127,28 @@ class TestExtractWingFromWhere:
         assert remaining == {"room": "testing"}
 
     def test_room_only(self):
-        from mempalace.es_client import _extract_wing_from_where
+        from mempalace.backends.elasticsearch import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where({"room": "testing"})
         assert wing is None
         assert remaining == {"room": "testing"}
 
     def test_source_file_only(self):
-        from mempalace.es_client import _extract_wing_from_where
+        from mempalace.backends.elasticsearch import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where({"source_file": "/path/to/file.py"})
         assert wing is None
         assert remaining == {"source_file": "/path/to/file.py"}
 
     def test_and_wing_only(self):
-        from mempalace.es_client import _extract_wing_from_where
+        from mempalace.backends.elasticsearch import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where({"$and": [{"wing": "code"}]})
         assert wing == "code"
         assert remaining is None
 
     def test_and_multiple_non_wing(self):
-        from mempalace.es_client import _extract_wing_from_where
+        from mempalace.backends.elasticsearch import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where(
             {"$and": [{"wing": "code"}, {"room": "auth"}, {"hall": "hall_facts"}]}
@@ -159,18 +164,18 @@ class TestExtractWingFromWhere:
 
 class TestTranslateWhere:
     def test_none(self):
-        from mempalace.es_client import _translate_where
+        from mempalace.backends.elasticsearch import _translate_where
 
         assert _translate_where(None) == []
 
     def test_simple(self):
-        from mempalace.es_client import _translate_where
+        from mempalace.backends.elasticsearch import _translate_where
 
         result = _translate_where({"wing": "code"})
         assert result == [{"term": {"wing": "code"}}]
 
     def test_and(self):
-        from mempalace.es_client import _translate_where
+        from mempalace.backends.elasticsearch import _translate_where
 
         result = _translate_where({"$and": [{"wing": "code"}, {"room": "auth"}]})
         assert result == [{"term": {"wing": "code"}}, {"term": {"room": "auth"}}]
