@@ -57,7 +57,7 @@ from .config import (  # noqa: E402
     sanitize_content,
 )
 from .version import __version__  # noqa: E402
-from .backends.chroma import ChromaBackend, ChromaCollection  # noqa: E402
+from .palace import get_collection  # noqa: E402
 from .query_sanitizer import sanitize_query  # noqa: E402
 from .searcher import search_memories  # noqa: E402
 from .palace_graph import (  # noqa: E402
@@ -103,10 +103,7 @@ else:
     _kg = KnowledgeGraph()
 
 
-_client_cache = None
 _collection_cache = None
-_palace_db_inode = 0  # inode of chroma.sqlite3 at cache time
-_palace_db_mtime = 0.0  # mtime of chroma.sqlite3 at cache time
 
 
 # ==================== WRITE-AHEAD LOG ====================
@@ -159,73 +156,19 @@ def _wal_log(operation: str, params: dict, result: dict = None):
         logger.error(f"WAL write failed: {e}")
 
 
-def _get_client():
-    """Return a ChromaDB PersistentClient, reconnecting if the database changed on disk.
-
-    Detects palace rebuilds (repair/nuke/purge) by checking the inode of
-    chroma.sqlite3.  A full rebuild replaces the file, changing the inode.
-    Also detects external writes (scripts, CLI) via mtime changes — the
-    inode check alone misses in-place modifications that invalidate the
-    in-memory HNSW index.
-
-    Note: FAT/exFAT may return 0 for st_ino — the ``current_inode != 0``
-    guard skips reconnect detection on those filesystems (safe fallback).
-    """
-    global \
-        _client_cache, \
-        _collection_cache, \
-        _palace_db_inode, \
-        _palace_db_mtime, \
-        _metadata_cache, \
-        _metadata_cache_time
-    db_path = os.path.join(_config.palace_path, "chroma.sqlite3")
-    try:
-        st = os.stat(db_path)
-        current_inode = st.st_ino
-        current_mtime = st.st_mtime
-    except OSError:
-        current_inode = 0
-        current_mtime = 0.0
-
-    # If the DB file disappeared (e.g. during rebuild) but we have a cached
-    # collection, invalidate so we don't serve stale data.  Without this,
-    # both stored and current values are 0 on the first call after deletion,
-    # making inode_changed and mtime_changed both False.
-    if not os.path.isfile(db_path) and _collection_cache is not None:
-        _client_cache = None
-        _collection_cache = None
-        _palace_db_inode = 0
-        _palace_db_mtime = 0.0
-        # Fall through to normal reconnect which will handle missing DB
-
-    inode_changed = current_inode != 0 and current_inode != _palace_db_inode
-    mtime_changed = current_mtime != 0.0 and abs(current_mtime - _palace_db_mtime) > 0.01
-
-    if _client_cache is None or inode_changed or mtime_changed:
-        _client_cache = ChromaBackend.make_client(_config.palace_path)
-        _collection_cache = None
-        _metadata_cache = None
-        _metadata_cache_time = 0
-        _palace_db_inode = current_inode
-        _palace_db_mtime = current_mtime
-    return _client_cache
-
-
 def _get_collection(create=False):
-    """Return the ChromaDB collection, caching the client between calls."""
+    """Return the palace drawers collection, caching it between calls.
+
+    Elasticsearch is server-mode, so we don't need chromadb's on-disk
+    inode/mtime staleness detection. The ES client itself manages connection
+    pooling and reconnects on failure.
+    """
     global _collection_cache, _metadata_cache, _metadata_cache_time
     try:
-        client = _get_client()
-        if create:
-            _collection_cache = ChromaCollection(
-                client.get_or_create_collection(
-                    _config.collection_name, metadata={"hnsw:space": "cosine"}
-                )
+        if _collection_cache is None or create:
+            _collection_cache = get_collection(
+                _config.palace_path, _config.collection_name, create=create
             )
-            _metadata_cache = None
-            _metadata_cache_time = 0
-        elif _collection_cache is None:
-            _collection_cache = ChromaCollection(client.get_collection(_config.collection_name))
             _metadata_cache = None
             _metadata_cache_time = 0
         return _collection_cache
@@ -1117,15 +1060,13 @@ def tool_memories_filed_away():
 
 
 def tool_reconnect():
-    """Force the MCP server to drop the cached ChromaDB collection and reconnect.
+    """Force the MCP server to drop the cached palace collection and reconnect.
 
-    Use after external scripts or CLI commands modify the palace database
-    directly, which can leave the in-memory HNSW index stale.
+    Use after external scripts or CLI commands modify the palace, or when the
+    ES client needs to reestablish its connection.
     """
-    global _collection_cache, _palace_db_inode, _palace_db_mtime
+    global _collection_cache
     _collection_cache = None
-    _palace_db_inode = 0
-    _palace_db_mtime = 0.0
     try:
         col = _get_collection()
         if col is None:

@@ -16,11 +16,11 @@ from collections import defaultdict
 
 from elasticsearch import Elasticsearch
 
-from .config import MempalaceConfig
-from .es_client import (
+from .backends.elasticsearch import (
     STRUCTURE_MAPPING,
     _build_wing_mapping,
 )
+from .config import MempalaceConfig
 
 # The old flat index name to migrate from
 LEGACY_INDEX = "mempalace_drawers"

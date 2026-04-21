@@ -9,7 +9,8 @@ import hashlib
 import os
 import re
 
-from .backends.chroma import ChromaBackend
+from .backends.base import PalaceRef
+from .backends.elasticsearch import ElasticsearchBackend
 
 SKIP_DIRS = {
     ".git",
@@ -37,7 +38,7 @@ SKIP_DIRS = {
     "target",
 }
 
-_DEFAULT_BACKEND = ChromaBackend()
+_DEFAULT_BACKEND = ElasticsearchBackend()
 
 # Schema version for drawer normalization. Bump when the normalization
 # pipeline changes in a way that existing drawers should be rebuilt to pick up
@@ -50,6 +51,16 @@ _DEFAULT_BACKEND = ChromaBackend()
 NORMALIZE_VERSION = 2
 
 
+def _palace_ref(palace_path: str) -> PalaceRef:
+    """Build a PalaceRef from a local path for the ES backend.
+
+    Elasticsearch is server-mode; ``palace_path`` is kept only as a logical
+    identifier (some callers still pass it for compat). The citadel namespace
+    drives the ES index prefix and is owned by :class:`MempalaceConfig`.
+    """
+    return PalaceRef(id=palace_path or "default", local_path=palace_path)
+
+
 def get_collection(
     palace_path: str,
     collection_name: str = "mempalace_drawers",
@@ -57,7 +68,7 @@ def get_collection(
 ):
     """Get the palace collection through the backend layer."""
     return _DEFAULT_BACKEND.get_collection(
-        palace_path,
+        palace=_palace_ref(palace_path),
         collection_name=collection_name,
         create=create,
     )

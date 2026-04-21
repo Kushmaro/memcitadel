@@ -19,8 +19,9 @@ except ImportError:
     print("Error: chromadb is required for migration. Install it with: pip install chromadb")
     sys.exit(1)
 
+from .backends.base import PalaceRef
+from .backends.elasticsearch import ElasticsearchBackend
 from .config import MempalaceConfig
-from .es_client import get_es_collection
 
 
 def migrate(palace_path: str = None, batch_size: int = 500):
@@ -49,13 +50,18 @@ def migrate(palace_path: str = None, batch_size: int = 500):
         return
 
     # Connect to ES destination
-    es_col = get_es_collection(create=True)
-    if not es_col:
-        print("  Error: Cannot connect to Elasticsearch.")
-        print("  Check MEMPALACE_ES_CLOUD_ID and MEMPALACE_ES_API_KEY env vars.")
+    try:
+        es_col = ElasticsearchBackend().get_collection(
+            palace=PalaceRef(id=palace_path, local_path=palace_path),
+            collection_name="mempalace_drawers",
+            create=True,
+        )
+    except Exception as e:
+        print(f"  Error: Cannot connect to Elasticsearch: {e}")
+        print("  Check ES_URL + ES_KEY (or MEMPALACE_ES_CLOUD_ID + MEMPALACE_ES_API_KEY) env vars.")
         sys.exit(1)
 
-    print(f"  Target:  ES index '{config.es_index_name}'")
+    print(f"  Target:  ES index prefix '{config.es_index_prefix}'")
     print(f"{'─' * 55}\n")
 
     # Migrate in batches

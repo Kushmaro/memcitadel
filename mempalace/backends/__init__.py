@@ -1,4 +1,4 @@
-"""Storage backend implementations for MemPalace (RFC 001).
+"""Storage backend implementations for MemCitadel (RFC 001).
 
 Public surface:
 
@@ -11,7 +11,7 @@ Public surface:
   :class:`EmbedderIdentityMismatchError`.
 * Registry: :func:`get_backend`, :func:`register`, :func:`available_backends`,
   :func:`resolve_backend_for_palace`.
-* In-tree Chroma default: :class:`ChromaBackend`, :class:`ChromaCollection`.
+* In-tree Elasticsearch default: :class:`ElasticsearchBackend`, :class:`ESCollection`.
 """
 
 from .base import (
@@ -28,7 +28,7 @@ from .base import (
     QueryResult,
     UnsupportedFilterError,
 )
-from .chroma import ChromaBackend, ChromaCollection
+from .elasticsearch import ElasticsearchBackend, ESCollection
 from .registry import (
     available_backends,
     get_backend,
@@ -44,9 +44,9 @@ __all__ = [
     "BackendError",
     "BaseBackend",
     "BaseCollection",
-    "ChromaBackend",
-    "ChromaCollection",
     "DimensionMismatchError",
+    "ESCollection",
+    "ElasticsearchBackend",
     "EmbedderIdentityMismatchError",
     "GetResult",
     "HealthStatus",
