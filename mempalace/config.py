@@ -85,8 +85,7 @@ def sanitize_content(value: str, max_length: int = 100_000) -> str:
 DEFAULT_PALACE_PATH = os.path.expanduser("~/.mempalace/palace")
 DEFAULT_COLLECTION_NAME = "mempalace_drawers"
 DEFAULT_ES_INDEX_NAME = "mempalace_drawers"
-DEFAULT_ES_INDEX_PREFIX = "mempalace_wing_"
-DEFAULT_ES_STRUCTURE_INDEX = "mempalace_structure"
+DEFAULT_ES_CITADEL = "default"
 DEFAULT_ES_INFERENCE_ID = ".multilingual-e5-small-elasticsearch"
 
 DEFAULT_TOPIC_WINGS = [
@@ -211,18 +210,31 @@ class MempalaceConfig:
         )
 
     @property
-    def es_index_prefix(self):
-        """Prefix for per-wing ES indices (e.g. mempalace_wing_)."""
-        return os.environ.get("MEMPALACE_ES_INDEX_PREFIX") or self._file_config.get(
-            "es_index_prefix", DEFAULT_ES_INDEX_PREFIX
+    def citadel(self):
+        """Citadel name — top-level corpus grouping (env: MEMCITADEL_CITADEL)."""
+        return os.environ.get("MEMCITADEL_CITADEL") or self._file_config.get(
+            "citadel", DEFAULT_ES_CITADEL
         )
 
     @property
-    def es_structure_index(self):
-        """ES index for wing/room structure metadata."""
-        return os.environ.get("MEMPALACE_ES_STRUCTURE_INDEX") or self._file_config.get(
-            "es_structure_index", DEFAULT_ES_STRUCTURE_INDEX
+    def es_index_prefix(self):
+        """Prefix for per-wing ES indices (e.g. citadel_default_)."""
+        override = os.environ.get("MEMPALACE_ES_INDEX_PREFIX") or self._file_config.get(
+            "es_index_prefix"
         )
+        if override:
+            return override
+        return f"citadel_{self.citadel}_"
+
+    @property
+    def es_structure_index(self):
+        """ES index for citadel structure metadata."""
+        override = os.environ.get("MEMPALACE_ES_STRUCTURE_INDEX") or self._file_config.get(
+            "es_structure_index"
+        )
+        if override:
+            return override
+        return f"citadel_{self.citadel}_structure"
 
     @property
     def es_inference_id(self):
