@@ -1,7 +1,7 @@
 import json
 from unittest.mock import patch
 
-from memcitadel.normalize import (
+from mempalace.normalize import (
     _extract_content,
     _messages_to_transcript,
     _try_chatgpt_json,

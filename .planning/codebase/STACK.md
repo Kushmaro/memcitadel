@@ -121,18 +121,18 @@ MEMPALACE_ES_INFERENCE_ID  — Inference endpoint for semantic embeddings
 
 **MCP Server Integration:**
 - MCP (Model Context Protocol) compatible with Claude Code
-- Installation: `claude mcp add memcitadel -- python -m memcitadel.mcp_server`
+- Installation: `claude mcp add memcitadel -- python -m mempalace.mcp_server`
 - Runs as subprocess, communicates via stdio
 
 ## Entry Points
 
 **CLI:**
 - Command: `memcitadel` (from `pyproject.toml` scripts)
-- Module: `memcitadel.cli:main`
+- Module: `mempalace.cli:main`
 - Supports: mine, init, search, wake-up, status, mcp, hooks, instructions commands
 
 **MCP Server:**
-- Module: `memcitadel.mcp_server`
+- Module: `mempalace.mcp_server`
 - Provides 19 tools for read/write palace access
 - Compatible with Claude and other LLM MCP clients
 

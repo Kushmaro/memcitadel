@@ -18,21 +18,21 @@
 
 **Presentation/MCP Layer:**
 - Purpose: Expose 19 memory tools to Claude Code and LLM clients
-- Location: `memcitadel/mcp_server.py`
+- Location: `mempalace/mcp_server.py`
 - Contains: Tool implementations (read: search, status, list; write: add_drawer, delete_drawer)
 - Depends on: Searcher, PalaceClient, knowledge graph
 - Used by: Claude Code IDE via MCP protocol
 
 **CLI Layer:**
 - Purpose: Command-line interface for mining, searching, initialization
-- Location: `memcitadel/cli.py`
+- Location: `mempalace/cli.py`
 - Contains: cmd_mine, cmd_init, cmd_search, cmd_wake_up, cmd_status, etc.
 - Depends on: Miners, searcher, palace utilities
 - Used by: Human operators, automation scripts
 
 **Mining/Ingest Layer:**
 - Purpose: Transform raw files/conversations into indexed drawers
-- Location: `memcitadel/miner.py`, `memcitadel/convo_miner.py`, `memcitadel/entity_detector.py`
+- Location: `mempalace/miner.py`, `mempalace/convo_miner.py`, `mempalace/entity_detector.py`
 - Contains: File scanning, room detection, entity extraction, chunking
 - Depends on: PalaceClient (ES), configuration
 - Used by: CLI (mine command)
@@ -43,14 +43,14 @@
 
 **Search/Query Layer:**
 - Purpose: Retrieve content from memory palace
-- Location: `memcitadel/searcher.py`
+- Location: `mempalace/searcher.py`
 - Contains: Hybrid BM25 + semantic search, wing/room filtering, scoring
 - Depends on: PalaceClient (ES queries)
 - Used by: MCP tools, CLI search command, layers system
 
 **Knowledge Graph Layer:**
 - Purpose: Temporal entity-relationship triples with validity windows
-- Location: `memcitadel/knowledge_graph.py`
+- Location: `mempalace/knowledge_graph.py`
 - Contains: KG schema (entities, triples, temporal bounds), query/add/update operations
 - Depends on: SQLite (local)
 - Used by: MCP server (optional enrichment)
@@ -58,7 +58,7 @@
 
 **Memory Layers (Context Compression):**
 - Purpose: 4-tier memory system for context-efficient wake-up
-- Location: `memcitadel/layers.py`
+- Location: `mempalace/layers.py`
 - Contains:
   - Layer 0 (~100 tokens): Identity from `identity.txt`
   - Layer 1 (~500-800 tokens): Essential story (top drawers from ES)
@@ -68,7 +68,7 @@
 
 **Elasticsearch Backend Layer:**
 - Purpose: Orchestrate per-wing indices, hybrid search, CRUD operations
-- Location: `memcitadel/es_client.py`
+- Location: `mempalace/es_client.py`
 - Contains:
   - `ESCollection` — Single index operations (add, query, get, delete)
   - `PalaceClient` — Multi-index routing (intercepts wing metadata, dispatches to per-wing indices)
@@ -79,7 +79,7 @@
 
 **Configuration Layer:**
 - Purpose: Centralize env/file/defaults for all settings
-- Location: `memcitadel/config.py`
+- Location: `mempalace/config.py`
 - Contains: MempalaceConfig class, input sanitizers, validation
 - Used by: All other modules
 
@@ -166,7 +166,7 @@
 ## Entry Points
 
 **CLI Entry:**
-- Location: `memcitadel.cli:main`
+- Location: `mempalace.cli:main`
 - Triggers: `memcitadel` command (from `pyproject.toml` scripts)
 - Responsibilities:
   - Route subcommand (mine, init, search, wake-up, status, mcp, hooks, instructions)
@@ -174,8 +174,8 @@
   - Invoke appropriate module (miners, searcher, layers, etc.)
 
 **MCP Server Entry:**
-- Location: `memcitadel.mcp_server`
-- Triggers: `python -m memcitadel.mcp_server` (installed as MCP tool)
+- Location: `mempalace.mcp_server`
+- Triggers: `python -m mempalace.mcp_server` (installed as MCP tool)
 - Responsibilities:
   - Listen for JSON-RPC calls on stdio
   - Implement 19 tools (read/write)
@@ -183,7 +183,7 @@
   - Return results in MCP format
 
 **Programmatic Entry:**
-- Location: `memcitadel.palace:get_collection()`
+- Location: `mempalace.palace:get_collection()`
 - Used by: Tests, external integrations
 - Returns: PalaceClient singleton (if ES configured)
 

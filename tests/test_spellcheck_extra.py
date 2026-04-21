@@ -2,7 +2,7 @@
 
 from unittest.mock import patch, MagicMock
 
-from memcitadel.spellcheck import (
+from mempalace.spellcheck import (
     _load_known_names,
     spellcheck_user_text,
 )

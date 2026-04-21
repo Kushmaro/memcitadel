@@ -15,7 +15,7 @@
 **Model Context Protocol (MCP):**
 - **Service:** MCP standard for LLM tool provision
 - **What it's used for:** Expose 19 memory tools to Claude Code and other MCP-compatible clients
-- **Implementation:** `memcitadel.mcp_server` module
+- **Implementation:** `mempalace.mcp_server` module
 - **Integration:** Tool discovery and JSON-RPC communication over stdio
 - **Tools:** read (search, status, list, get_taxonomy) and write (add_drawer, delete_drawer) operations
 
@@ -77,7 +77,7 @@
 **Error Tracking:**
 - **Approach:** None configured
 - **Logging:** Python `logging` module to stderr
-  - Logger: `mempalace_es`, `mempalace_mcp`, `memcitadel`
+  - Logger: `mempalace_es`, `mempalace_mcp`, `mempalace`
   - Suppresses noisy: `elastic_transport` logger set to WARNING
 
 **Logs:**

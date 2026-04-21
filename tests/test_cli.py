@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from memcitadel.cli import (
+from mempalace.cli import (
     cmd_compress,
     cmd_hook,
     cmd_init,
@@ -71,7 +71,7 @@ def test_cmd_search_calls_search(mock_config_cls):
 def test_cmd_search_error_exits(mock_config_cls):
     mock_config_cls.return_value.palace_path = "/fake/palace"
     args = argparse.Namespace(palace=None, query="q", wing=None, room=None, results=5)
-    from memcitadel.searcher import SearchError
+    from mempalace.searcher import SearchError
 
     with patch("mempalace.searcher.search", side_effect=SearchError("fail")):
         with pytest.raises(SystemExit) as exc_info:

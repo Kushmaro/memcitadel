@@ -174,8 +174,8 @@ def _extract_wing_from_where(where):
 - Private modules (prefixed with `_`) not declared in `__all__`
 
 **Barrel Files:**
-- `memcitadel/__init__.py` exports main entry point and version
-- No large barrel files; most imports are direct (e.g., `from memcitadel.searcher import search`)
+- `mempalace/__init__.py` exports main entry point and version
+- No large barrel files; most imports are direct (e.g., `from mempalace.searcher import search`)
 
 ## Type Hints
 

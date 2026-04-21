@@ -170,7 +170,7 @@ memcitadel status
 
 ```bash
 # MCP server for Claude, ChatGPT, Cursor, Gemini
-claude mcp add memcitadel -- python -m memcitadel.mcp_server
+claude mcp add memcitadel -- python -m mempalace.mcp_server
 ```
 
 Your AI now has 19 MCP tools to navigate the palace. Ask it anything:
@@ -234,7 +234,7 @@ The AI calls `mempalace_search`, gets verbatim results from the right wing, and 
 Temporal entity-relationship triples stored in SQLite (local). Facts have validity windows — when something stops being true, invalidate it.
 
 ```python
-from memcitadel.knowledge_graph import KnowledgeGraph
+from mempalace.knowledge_graph import KnowledgeGraph
 
 kg = KnowledgeGraph()
 kg.add_triple("Maya", "assigned_to", "auth-migration", valid_from="2026-01-15")

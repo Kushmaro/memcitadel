@@ -116,7 +116,7 @@ class TestRecallThresholdSingleRoom:
         palace_path = str(tmp_path / "palace")
         _populate_single_room(palace_path, n_drawers, n_needles=10)
 
-        from memcitadel.searcher import search_memories
+        from mempalace.searcher import search_memories
 
         hits_at_5 = 0
         hits_at_10 = 0
@@ -156,7 +156,7 @@ class TestRecallThresholdSingleRoom:
         palace_path = str(tmp_path / "palace")
         _populate_single_room(palace_path, n_drawers, n_needles=10)
 
-        from memcitadel.searcher import search_memories
+        from mempalace.searcher import search_memories
 
         hits_at_5 = 0
         hits_at_10 = 0

@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from memcitadel.spellcheck import (
+from mempalace.spellcheck import (
     _edit_distance,
     _get_system_words,
     _should_skip,

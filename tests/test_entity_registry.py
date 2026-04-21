@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from memcitadel.entity_registry import (
+from mempalace.entity_registry import (
     COMMON_ENGLISH_WORDS,
     PERSON_CONTEXT_PATTERNS,
     EntityRegistry,

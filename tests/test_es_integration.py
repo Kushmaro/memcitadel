@@ -48,8 +48,8 @@ def es_client():
 @pytest.fixture(scope="module")
 def palace(es_client, test_prefix, monkeypatch_module):
     """A PalaceClient with unique test indices."""
-    from memcitadel.config import MempalaceConfig
-    from memcitadel.es_client import PalaceClient, STRUCTURE_MAPPING
+    from mempalace.config import MempalaceConfig
+    from mempalace.es_client import PalaceClient, STRUCTURE_MAPPING
 
     config = MempalaceConfig()
     # Override prefixes to use test-specific indices
@@ -92,28 +92,28 @@ def monkeypatch_module():
 
 class TestExtractWingFromWhere:
     def test_none(self):
-        from memcitadel.es_client import _extract_wing_from_where
+        from mempalace.es_client import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where(None)
         assert wing is None
         assert remaining is None
 
     def test_empty_dict(self):
-        from memcitadel.es_client import _extract_wing_from_where
+        from mempalace.es_client import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where({})
         assert wing is None
         assert remaining is None
 
     def test_simple_wing(self):
-        from memcitadel.es_client import _extract_wing_from_where
+        from mempalace.es_client import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where({"wing": "code"})
         assert wing == "code"
         assert remaining is None
 
     def test_wing_and_room(self):
-        from memcitadel.es_client import _extract_wing_from_where
+        from mempalace.es_client import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where(
             {"$and": [{"wing": "code"}, {"room": "testing"}]}
@@ -122,28 +122,28 @@ class TestExtractWingFromWhere:
         assert remaining == {"room": "testing"}
 
     def test_room_only(self):
-        from memcitadel.es_client import _extract_wing_from_where
+        from mempalace.es_client import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where({"room": "testing"})
         assert wing is None
         assert remaining == {"room": "testing"}
 
     def test_source_file_only(self):
-        from memcitadel.es_client import _extract_wing_from_where
+        from mempalace.es_client import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where({"source_file": "/path/to/file.py"})
         assert wing is None
         assert remaining == {"source_file": "/path/to/file.py"}
 
     def test_and_wing_only(self):
-        from memcitadel.es_client import _extract_wing_from_where
+        from mempalace.es_client import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where({"$and": [{"wing": "code"}]})
         assert wing == "code"
         assert remaining is None
 
     def test_and_multiple_non_wing(self):
-        from memcitadel.es_client import _extract_wing_from_where
+        from mempalace.es_client import _extract_wing_from_where
 
         wing, remaining = _extract_wing_from_where(
             {"$and": [{"wing": "code"}, {"room": "auth"}, {"hall": "hall_facts"}]}
@@ -159,18 +159,18 @@ class TestExtractWingFromWhere:
 
 class TestTranslateWhere:
     def test_none(self):
-        from memcitadel.es_client import _translate_where
+        from mempalace.es_client import _translate_where
 
         assert _translate_where(None) == []
 
     def test_simple(self):
-        from memcitadel.es_client import _translate_where
+        from mempalace.es_client import _translate_where
 
         result = _translate_where({"wing": "code"})
         assert result == [{"term": {"wing": "code"}}]
 
     def test_and(self):
-        from memcitadel.es_client import _translate_where
+        from mempalace.es_client import _translate_where
 
         result = _translate_where({"$and": [{"wing": "code"}, {"room": "auth"}]})
         assert result == [{"term": {"wing": "code"}}, {"term": {"room": "auth"}}]

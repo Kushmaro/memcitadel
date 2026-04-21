@@ -6,9 +6,9 @@
 
 ```
 memcitadle/
-├── memcitadel/                  # Main package
+├── mempalace/                  # Main package
 │   ├── __init__.py              # Entry point, version import
-│   ├── __main__.py              # CLI entry (python -m memcitadel)
+│   ├── __main__.py              # CLI entry (python -m mempalace)
 │   ├── cli.py                   # Command-line interface (mine, init, search, etc.)
 │   ├── config.py                # Configuration + sanitizers
 │   ├── version.py               # Version string
@@ -76,7 +76,7 @@ memcitadle/
 
 ## Directory Purposes
 
-**memcitadel/ (Main Package):**
+**mempalace/ (Main Package):**
 - Purpose: All source code for the library
 - Contains: Miners, search, ES client, MCP server, utilities
 - Key files: `es_client.py` (core), `cli.py` (entry), `mcp_server.py` (IDE integration)
@@ -114,10 +114,10 @@ memcitadle/
 ## Key File Locations
 
 **Entry Points:**
-- `memcitadel/__init__.py` — Package root, imports main CLI entry
-- `memcitadel/cli.py` — Command router for all subcommands
-- `memcitadel/__main__.py` — Python module execution entry (`python -m memcitadel`)
-- `memcitadel/mcp_server.py` — MCP tool server for Claude Code integration
+- `mempalace/__init__.py` — Package root, imports main CLI entry
+- `mempalace/cli.py` — Command router for all subcommands
+- `mempalace/__main__.py` — Python module execution entry (`python -m mempalace`)
+- `mempalace/mcp_server.py` — MCP tool server for Claude Code integration
 
 **Configuration:**
 - `pyproject.toml` — Package metadata, dependencies, tool configs (ruff, pytest, coverage)
@@ -125,12 +125,12 @@ memcitadle/
 - `entities.json` — Detected entities (created by `mempalace init`)
 
 **Core Logic:**
-- `memcitadel/es_client.py` — Elasticsearch backend (ESCollection, PalaceClient, hybrid search)
-- `memcitadel/miner.py` — Project file mining with chunking and room detection
-- `memcitadel/convo_miner.py` — Conversation mining with exchange-pair chunking
-- `memcitadel/searcher.py` — Search interface (hybrid BM25 + semantic)
-- `memcitadel/layers.py` — Memory context compression (wake-up system)
-- `memcitadel/knowledge_graph.py` — Temporal entity-relationship store
+- `mempalace/es_client.py` — Elasticsearch backend (ESCollection, PalaceClient, hybrid search)
+- `mempalace/miner.py` — Project file mining with chunking and room detection
+- `mempalace/convo_miner.py` — Conversation mining with exchange-pair chunking
+- `mempalace/searcher.py` — Search interface (hybrid BM25 + semantic)
+- `mempalace/layers.py` — Memory context compression (wake-up system)
+- `mempalace/knowledge_graph.py` — Temporal entity-relationship store
 
 **Testing:**
 - `tests/conftest.py` — Pytest fixtures for ES, palace, config isolation
@@ -147,7 +147,7 @@ memcitadle/
 - Utility files: Clear names, no abbreviation (e.g., `entity_detector.py`, not `ent_det.py`)
 
 **Directories:**
-- Package: `memcitadel/` (lowercase, no hyphens)
+- Package: `mempalace/` (lowercase, no hyphens)
 - Test suite: `tests/` (standard)
 - Data: `bright/` (benchmark data), `benchmarks/` (scripts)
 - Config: `.github/`, `.planning/`, root level for primary configs
@@ -169,24 +169,24 @@ memcitadle/
 ## Where to Add New Code
 
 **New Feature (Search, Mining, etc.):**
-- Primary code: `memcitadel/{feature}.py` (new module at package root)
-- Example: New search strategy → `memcitadel/search_strategy.py`, call from `searcher.py`
+- Primary code: `mempalace/{feature}.py` (new module at package root)
+- Example: New search strategy → `mempalace/search_strategy.py`, call from `searcher.py`
 - Tests: `tests/test_{feature}.py` (parallel to source)
 - Integration: Wire into `cli.py` or `mcp_server.py` if user-facing
 
 **New Component/Module:**
-- Implementation: `memcitadel/{component}.py` (snake_case filename)
+- Implementation: `mempalace/{component}.py` (snake_case filename)
 - Class definition: `PascalCase` (e.g., `CustomAnalyzer`)
 - Public interface: Export from `__init__.py` if meant for external use
 - Internal utilities: Keep in module, prefix with `_` for private functions
 
 **Utilities (Helpers, Common Functions):**
-- Shared helpers: Add to `memcitadel/palace.py` (existing utilities file)
-- Or create new `memcitadel/utils_{name}.py` if large
+- Shared helpers: Add to `mempalace/palace.py` (existing utilities file)
+- Or create new `mempalace/utils_{name}.py` if large
 - Example: `SKIP_DIRS` in `palace.py` is shared between miners
 
 **MCP Tools (New read/write operations):**
-- Definition: `memcitadel/mcp_server.py` — add new tool function
+- Definition: `mempalace/mcp_server.py` — add new tool function
 - Pattern: Implement `tool_name(params) → dict` returning MCP-formatted result
 - WAL: Automatically logged by `_wal_log()` helper (for write operations)
 - Example: `mempalace_add_drawer()` implements add via PalaceClient + WAL
@@ -199,7 +199,7 @@ memcitadle/
 
 ## Special Directories
 
-**memcitadel/instructions/ (LLM Instructions):**
+**mempalace/instructions/ (LLM Instructions):**
 - Purpose: Prompt templates for instruction extraction
 - Generated: Yes (templates, not user data)
 - Committed: Yes (part of source code)
@@ -231,7 +231,7 @@ memcitadle/
 
 **~/.mempalace/ (User Home Directory):**
 - Purpose: Palace metadata and local databases
-- Generated: Yes (by memcitadel at runtime)
+- Generated: Yes (by mempalace at runtime)
 - Committed: No (outside repo)
 - Contains:
   - `palace/` — Palace directory (ES replaces file storage)

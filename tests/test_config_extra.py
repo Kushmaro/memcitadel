@@ -3,7 +3,7 @@
 import json
 import os
 
-from memcitadel.config import MempalaceConfig
+from mempalace.config import MempalaceConfig
 
 
 def test_config_bad_json(tmp_path):

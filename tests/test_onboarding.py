@@ -3,7 +3,7 @@
 import os
 from unittest.mock import patch
 
-from memcitadel.onboarding import (
+from mempalace.onboarding import (
     DEFAULT_WINGS,
     _ask,
     _ask_mode,

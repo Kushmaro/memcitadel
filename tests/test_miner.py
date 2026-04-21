@@ -6,7 +6,7 @@ from pathlib import Path
 import chromadb
 import yaml
 
-from memcitadel.miner import mine, scan_project, file_already_mined
+from mempalace.miner import mine, scan_project, file_already_mined
 
 
 def write_file(path: Path, content: str):

@@ -3,7 +3,7 @@
 import os
 from unittest.mock import MagicMock, patch
 
-from memcitadel.layers import Layer0, Layer1, Layer2, Layer3, MemoryStack
+from mempalace.layers import Layer0, Layer1, Layer2, Layer3, MemoryStack
 
 
 # ── Layer0 — with identity file ─────────────────────────────────────────

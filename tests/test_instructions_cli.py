@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from memcitadel.instructions_cli import AVAILABLE, INSTRUCTIONS_DIR, run_instructions
+from mempalace.instructions_cli import AVAILABLE, INSTRUCTIONS_DIR, run_instructions
 
 
 def test_run_instructions_valid_name(capsys):

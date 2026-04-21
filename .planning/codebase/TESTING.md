@@ -25,9 +25,9 @@ pytest -k test_lookup_known_person   # Run by test name pattern
 **Coverage:**
 - Tool: `pytest-cov` 4.0+
 - Requirement: 85% minimum (`fail_under = 85` in pyproject.toml)
-- Command: `pytest --cov=memcitadel --cov-report=html`
+- Command: `pytest --cov=mempalace --cov-report=html`
 - Excluded from coverage: `if __name__` blocks, lines marked `pragma: no cover`
-- Source under test: `memcitadel/` directory only
+- Source under test: `mempalace/` directory only
 
 ## Test File Organization
 
@@ -413,7 +413,7 @@ pytest -m "not slow"   # Skip slow tests
 
 **With coverage:**
 ```bash
-pytest --cov=memcitadel --cov-report=term-missing tests/
+pytest --cov=mempalace --cov-report=term-missing tests/
 ```
 
 ---

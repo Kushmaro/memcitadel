@@ -20,11 +20,11 @@ rooms:
   keywords:
   - benchmarks
   - benchmarks
-- name: memcitadel
-  description: Files from memcitadel/
+- name: mempalace
+  description: Files from mempalace/
   keywords:
-  - memcitadel
-  - memcitadel
+  - mempalace
+  - mempalace
 - name: design
   description: Files from assets/
   keywords:

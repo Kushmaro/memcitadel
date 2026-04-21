@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 
 from mempalace import __version__
-from memcitadel.mcp_server import handle_request
+from mempalace.mcp_server import handle_request
 
 
 def _expected_version() -> str:

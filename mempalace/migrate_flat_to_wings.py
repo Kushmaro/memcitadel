@@ -7,7 +7,7 @@ them into per-wing indices (`mempalace_wing_{name}`), creating the structure
 index along the way.
 
 Usage:
-    python -m memcitadel.migrate_flat_to_wings [--batch-size 500]
+    python -m mempalace.migrate_flat_to_wings [--batch-size 500]
 """
 
 import argparse

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from memcitadel.hooks_cli import (
+from mempalace.hooks_cli import (
     SAVE_INTERVAL,
     STOP_BLOCK_REASON,
     PRECOMPACT_BLOCK_REASON,
