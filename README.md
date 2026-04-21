@@ -39,11 +39,11 @@ MemCitadel is an enterprise-scale RAG system that gives AI agents persistent, st
 ## Architecture
 
 ```
-mempalace_structure              metadata index (wing/room definitions)
-mempalace_wing_engineering       drawers for the engineering wing
-mempalace_wing_product           drawers for the product wing
-mempalace_wing_atlas             drawers for agent "atlas" (diary, observations)
-mempalace_wing_*                 wildcard for cross-wing operations
+citadel_{citadel}_structure      metadata index (wing/room definitions)
+citadel_{citadel}_engineering    drawers for the engineering wing
+citadel_{citadel}_product        drawers for the product wing
+citadel_{citadel}_atlas          drawers for agent "atlas" (diary, observations)
+citadel_{citadel}_*              wildcard for cross-wing operations
 ```
 
 ### Index-Per-Wing
@@ -55,7 +55,7 @@ Every wing gets its own Elasticsearch index. This is the core architectural deci
 - **Per-wing security** — scope API keys to specific wings for tenant isolation
 - **Faster queries** — searching within a wing hits only that wing's shards, not the entire dataset
 
-Cross-wing operations (status, taxonomy, palace graph traversal) use the `mempalace_wing_*` wildcard pattern. These are admin/analytics operations — the hot path is always wing-scoped.
+Cross-wing operations (status, taxonomy, palace graph traversal) use the `citadel_{citadel}_*` wildcard pattern. These are admin/analytics operations — the hot path is always wing-scoped.
 
 ### Hybrid Search
 
@@ -70,7 +70,7 @@ Wing and room filters are injected into both retrievers as `bool.filter` clauses
 
 ### Structure Index
 
-A lightweight metadata index (`mempalace_structure`) stores wing and room definitions:
+A lightweight metadata index (`citadel_{citadel}_structure`) stores wing and room definitions:
 
 ```json
 {"_id": "wing:engineering", "type": "wing", "name": "engineering", "created_at": "..."}

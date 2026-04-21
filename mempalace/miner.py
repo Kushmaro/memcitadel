@@ -828,7 +828,7 @@ def mine(
     print(f"  Drawers filed: {total_drawers}")
     print("\n  By room:")
     for room, count in sorted(room_counts.items(), key=lambda x: x[1], reverse=True):
-        print(f"    {room:20} {count} files")
+        print(f"    {room or 'unknown':20} {count} files")
     print('\n  Next: mempalace search "what you\'re looking for"')
     print(f"{'=' * 55}\n")
 

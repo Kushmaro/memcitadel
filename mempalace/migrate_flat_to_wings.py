@@ -3,7 +3,7 @@
 migrate_flat_to_wings.py — Migrate from flat index to per-wing indices.
 
 Reads all drawers from the legacy `mempalace_drawers` index and re-indexes
-them into per-wing indices (`mempalace_wing_{name}`), creating the structure
+them into per-wing indices (`citadel_{citadel}_{wing}`), creating the structure
 index along the way.
 
 Usage:

@@ -25,12 +25,12 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def test_prefix():
     """Unique index prefix for this test run to avoid collisions."""
-    return f"test_mempalace_{uuid.uuid4().hex[:8]}_wing_"
+    return f"test_citadel_{uuid.uuid4().hex[:8]}_"
 
 
 @pytest.fixture(scope="module")
 def test_structure_index(test_prefix):
-    return f"test_mempalace_{test_prefix.split('_wing_')[0].split('_', 2)[-1]}_structure"
+    return f"{test_prefix}structure"
 
 
 @pytest.fixture(scope="module")
@@ -51,7 +51,7 @@ def palace(es_client, test_prefix, monkeypatch_module):
     from mempalace.backends.elasticsearch import ESCollection, STRUCTURE_MAPPING
     from mempalace.config import MempalaceConfig
 
-    structure_index = test_prefix.replace("_wing_", "_structure")
+    structure_index = f"{test_prefix}structure"
     config = MempalaceConfig()
     # Override prefixes to use test-specific indices without touching global config
     monkeypatch_module.setattr(type(config), "es_index_prefix", property(lambda self: test_prefix))
