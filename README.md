@@ -170,7 +170,7 @@ memcitadel status
 
 ```bash
 # MCP server for Claude, ChatGPT, Cursor, Gemini
-claude mcp add memcitadel -- python -m memcitadel.mcp_server
+claude mcp add memcitadel -- python -m mempalace.mcp_server
 ```
 
 Your AI now has 19 MCP tools to navigate the palace. Ask it anything:
@@ -234,7 +234,7 @@ The AI calls `mempalace_search`, gets verbatim results from the right wing, and 
 Temporal entity-relationship triples stored in SQLite (local). Facts have validity windows — when something stops being true, invalidate it.
 
 ```python
-from memcitadel.knowledge_graph import KnowledgeGraph
+from mempalace.knowledge_graph import KnowledgeGraph
 
 kg = KnowledgeGraph()
 kg.add_triple("Maya", "assigned_to", "auth-migration", valid_from="2026-01-15")
@@ -284,6 +284,29 @@ MemPalace is designed as a local-first personal memory tool. MemCitadel takes th
 - **Python counting → ES aggregations**: Status and taxonomy queries use native ES aggregations instead of pulling all metadata into Python.
 
 The MCP tool interface is identical. Agents don't know or care which backend is running.
+
+---
+
+## Upstream compatibility (synced with mempalace v3.3.2)
+
+MemCitadel tracks upstream MemPalace. The ES backend implements the RFC 001 §10 `BaseCollection`/`BaseBackend` contract, so most upstream features work unmodified under Elasticsearch.
+
+**Works under ES (pulled from upstream):**
+
+- Closets (compact hybrid search layer) — per-palace flat index
+- Diary ingest — day-based cross-project rooms
+- Sweeper + PID guard — message-level safety net for dropped JSONL
+- Exporter, fact-checker, query sanitizer
+- Source adapter scaffold (RFC 002 §9) — `BaseSourceAdapter` / `PalaceContext` available for third-party adapters; no first-party ES adapter registered yet
+- i18n expansion (pt-br, ru, it, hi, id + existing locales)
+
+**Not ported (ChromaDB-specific):**
+
+- HNSW quarantine safeguard — specific to chromadb's on-disk HNSW layout
+- `mempalace repair` / `mempalace migrate` CLI subcommands — rebuilt chromadb indexes from SQLite metadata
+- `mempalace.dedup` module — HNSW-based deduplication
+
+For fork-specific migration (moving an existing ChromaDB palace to ES), see `python -m mempalace.migrate_to_es --help`.
 
 ---
 

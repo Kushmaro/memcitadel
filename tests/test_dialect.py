@@ -5,7 +5,7 @@ Covers plain text compression, entity detection, emotion detection,
 topic extraction, key sentence extraction, zettel encoding, and stats.
 """
 
-from memcitadel.dialect import Dialect
+from mempalace.dialect import Dialect
 
 
 class TestPlainTextCompression:
@@ -114,6 +114,20 @@ class TestCompressionStats:
 
     def test_count_tokens(self):
         assert Dialect.count_tokens("hello world") == 2
+
+    def test_compression_stats_keys(self):
+        """Verify compression_stats() returns the expected key set."""
+        d = Dialect()
+        stats = d.compression_stats("hello world this is a test", "HW:test")
+        expected_keys = {
+            "original_chars",
+            "summary_chars",
+            "original_tokens_est",
+            "summary_tokens_est",
+            "size_ratio",
+            "note",
+        }
+        assert set(stats.keys()) == expected_keys
 
 
 class TestZettelEncoding:

@@ -4,13 +4,13 @@ from unittest.mock import patch
 
 import pytest
 
-from memcitadel.instructions_cli import AVAILABLE, INSTRUCTIONS_DIR, run_instructions
+from mempalace.instructions_cli import AVAILABLE, INSTRUCTIONS_DIR, run_instructions
 
 
 def test_run_instructions_valid_name(capsys):
     """Valid name prints the .md file content."""
     name = "init"
-    expected = (INSTRUCTIONS_DIR / f"{name}.md").read_text()
+    expected = (INSTRUCTIONS_DIR / f"{name}.md").read_text(encoding="utf-8")
     run_instructions(name)
     captured = capsys.readouterr()
     assert captured.out.strip() == expected.strip()

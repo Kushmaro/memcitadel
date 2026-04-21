@@ -1,6 +1,6 @@
 """Unit tests for convo_miner pure functions (no chromadb needed)."""
 
-from memcitadel.convo_miner import (
+from mempalace.convo_miner import (
     chunk_exchanges,
     detect_convo_room,
     scan_convos,
@@ -46,6 +46,17 @@ class TestChunkExchanges:
         chunks = chunk_exchanges("> hi\nbye")
         # Too short to produce chunks (below MIN_CHUNK_SIZE)
         assert isinstance(chunks, list)
+
+    def test_long_ai_response_not_truncated(self):
+        """AI responses longer than 8 lines must be stored in full (verbatim principle)."""
+        lines = [f"Step {i}: important detail that must be stored" for i in range(1, 14)]
+        content = "> How do I implement authentication?\n" + "\n".join(lines)
+        chunks = chunk_exchanges(content)
+        assert len(chunks) >= 1
+        stored = chunks[0]["content"]
+        # All 13 lines must be present — none silently dropped
+        for i in range(1, 14):
+            assert f"Step {i}:" in stored, f"Step {i} was truncated and not stored"
 
 
 class TestDetectConvoRoom:

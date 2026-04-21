@@ -25,7 +25,6 @@ import os
 import sys
 import json
 import shutil
-import ssl
 import tempfile
 import argparse
 import urllib.request
@@ -34,9 +33,6 @@ from collections import defaultdict
 from datetime import datetime
 
 import chromadb
-
-# Bypass SSL for restricted environments
-ssl._create_default_https_context = ssl._create_unverified_context
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -183,7 +179,7 @@ def retrieve_for_item(item, top_k=10, mode="raw"):
 
         # Optionally compress
         if mode == "aaak":
-            from memcitadel.dialect import Dialect
+            from mempalace.dialect import Dialect
 
             dialect = Dialect()
             docs = [dialect.compress(doc) for doc in corpus]

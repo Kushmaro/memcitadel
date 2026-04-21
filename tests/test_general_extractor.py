@@ -1,6 +1,6 @@
 """Tests for mempalace.general_extractor."""
 
-from memcitadel.general_extractor import (
+from mempalace.general_extractor import (
     ALL_MARKERS,
     NEGATIVE_WORDS,
     POSITIVE_WORDS,

@@ -25,7 +25,7 @@ def _make_fake_collection(metadatas, ids=None):
 
 # Patch chromadb at import time so palace_graph can be imported
 with patch.dict("sys.modules", {"chromadb": MagicMock()}):
-    from memcitadel.palace_graph import (
+    from mempalace.palace_graph import (
         _fuzzy_match,
         build_graph,
         find_tunnels,
