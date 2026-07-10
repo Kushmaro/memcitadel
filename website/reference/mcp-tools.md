@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-Detailed parameter schemas for all 29 MCP tools.
+Detailed parameter schemas for all 35 MCP tools.
 
 ## Palace — Read Tools
 
@@ -10,7 +10,7 @@ Palace overview: total drawers, wing and room counts, AAAK spec, and memory prot
 
 **Parameters:** None
 
-**Returns:** `{ total_drawers, wings, rooms, palace_path, protocol, aaak_dialect }`
+**Returns:** `{ total_drawers, wings, rooms, protocol, aaak_dialect }`
 
 ---
 
@@ -102,6 +102,20 @@ File verbatim content into the palace. Identical content (same deterministic dra
 
 ---
 
+### `mempalace_checkpoint`
+
+Save a whole session in one call. Semantic-dedups each item, files the non-duplicates as drawers, then writes one diary entry. Use this instead of many separate `mempalace_check_duplicate` / `mempalace_add_drawer` / `mempalace_diary_write` calls — it renders as a single tool-call card in the host UI (and keeps the spinner up for the whole save). Reuses the same single-item handlers, so dedup, idempotency, and verbatim guarantees are identical.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `items` | array | **Yes** | Verbatim items to file. Each is `{ wing, room, content }` |
+| `diary` | object | No | Diary entry written after filing: `{ agent_name, entry, topic?, wing? }` (`entry` is AAAK-format) |
+| `dedup_threshold` | number | No | Similarity threshold 0–1 for the per-item dedup check (default 0.9) |
+
+**Returns:** `{ added: [...], duplicates: [...], errors: [...], diary? }`
+
+---
+
 ### `mempalace_delete_drawer`
 
 Delete a drawer by ID. Irreversible.
@@ -114,6 +128,52 @@ Delete a drawer by ID. Irreversible.
 
 ---
 
+### `mempalace_mine`
+
+Mine a directory into the palace — the MCP equivalent of `mempalace mine`. Wraps the same in-process miners the CLI uses; runs synchronously and returns the miner's summary as `output`. The palace write lock is automatic — a concurrent mine returns a structured already-running error. Orphan cleanup is separate (see `mempalace_sync`).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `source` | string | **Yes** | Directory to mine |
+| `mode` | string | No | `projects` (code/docs, default), `convos` (chat transcripts), or `extract` (office docs; needs the `mempalace[extract]` extra) |
+| `wing` | string | No | Target wing (default: source directory name) |
+| `agent` | string | No | Recorded on every drawer (default: `mempalace`) |
+| `limit` | integer | No | Max files to process (0 = all; default 0) |
+| `dry_run` | boolean | No | Report what would be filed without writing (default false) |
+| `extract` | string | No | Convos extraction strategy: `exchange` (default) or `general`; ignored by other modes |
+
+**Returns:** `{ success, mode, dry_run, output }` on success (`output` is the miner's human-readable summary; `output_truncated: true` is added when a very large summary is tail-trimmed), or `{ success: false, error, error_class? }` on failure.
+
+---
+
+### `mempalace_delete_by_source`
+
+Bulk-delete every drawer mined from one `source_file` (exact match). Use this to clean up benchmark or test data that was accidentally mined into a user wing — for example ShareGPT dumps or `results_mempal_*.jsonl` eval files drowning out real memories in semantic search. Matching is pushed down to the storage backend via a `where` filter, so it is not subject to the SQLite variable limit no matter how many drawers share the source. Returns a dry-run match count and a small sample by default; pass `dry_run=false` to commit. Irreversible.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `source_file` | string | **Yes** | Exact `source_file` metadata value to remove (e.g. the full path that was mined) |
+| `dry_run` | boolean | No | Preview the match count without deleting; default `true`. Pass `false` to actually delete |
+
+**Returns (dry run):** `{ success, dry_run, source_file, match_count, sample, hint }`
+**Returns (commit):** `{ success, dry_run, source_file, deleted }`
+
+---
+
+### `mempalace_sync`
+
+Prune drawers whose source files are gitignored, deleted, or moved. Returns a dry-run report by default; pass `apply=true` to commit deletions.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_dir` | string | No | Project root to scope the sync (auto-detected from drawer metadata if omitted) |
+| `wing` | string | No | Limit to one wing |
+| `apply` | boolean | No | Actually delete drawers; default is dry-run preview |
+
+**Returns:** `{ scanned, kept, gitignored, missing, no_source, out_of_scope, removed_drawers, removed_closets, dry_run, by_source }`
+
+---
+
 ### `mempalace_get_drawer`
 
 Fetch a single drawer by ID — returns full content and metadata.
@@ -122,7 +182,7 @@ Fetch a single drawer by ID — returns full content and metadata.
 |-----------|------|----------|-------------|
 | `drawer_id` | string | **Yes** | ID of the drawer to fetch |
 
-**Returns:** `{ drawer: { id, wing, room, content, ... } }`
+**Returns:** `{ drawer_id, content, wing, room, metadata }` where `metadata.source_file`, when present, is the basename only — the absolute path written by the miners is reduced before the dict is returned to MCP clients.
 
 ---
 
@@ -305,6 +365,30 @@ Delete an explicit tunnel by its ID.
 
 ---
 
+### `mempalace_list_hallways`
+
+List within-wing hallway records (entity-to-entity co-occurrence links built at mine time). Optionally filter by wing.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `wing` | string | No | Filter hallways by wing |
+
+**Returns:** `[ { id, wing, entity_a, entity_b, co_occurrence_count, rooms, ... }, ... ]`
+
+---
+
+### `mempalace_delete_hallway`
+
+Delete a hallway record by its ID.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `hallway_id` | string | **Yes** | Hallway ID to delete |
+
+**Returns:** `{ deleted: bool }`
+
+---
+
 ### `mempalace_follow_tunnels`
 
 Follow tunnels from a room to see what it connects to in other wings. Returns connected rooms with drawer previews.
@@ -378,4 +462,4 @@ Force a reconnect to the palace database. Use this after external scripts or CLI
 
 **Parameters:** None
 
-**Returns:** `{ success, palace_path }`
+**Returns:** `{ success, message, drawers, vector_disabled[, vector_disabled_reason] }` (on no-palace: `{ success: false, message, drawers, vector_disabled }`; on exception: `{ success: false, error }`)

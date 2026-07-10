@@ -1,6 +1,9 @@
 """Tests for mempalace.cli — the main CLI dispatcher."""
 
 import argparse
+import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -8,9 +11,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from mempalace.cli import (
+    cmd_compress,
     cmd_hook,
     cmd_init,
     cmd_instructions,
+    cmd_daemon,
     cmd_mine,
     cmd_search,
     cmd_split,
@@ -18,6 +23,68 @@ from mempalace.cli import (
     cmd_wakeup,
     main,
 )
+
+
+# ── CLI entry point: PYTHONPATH stripping ────────────────────────────────
+
+
+_LEAK_PREFIX = "/__mempalace_cli_leak_sentinel__"
+
+
+def test_cli_main_strips_leaked_pythonpath_from_env():
+    """mempalace.cli:main must drop PYTHONPATH from the process env so
+    any subprocess the CLI spawns starts clean. Mirrors the
+    sys.path-filter test in test_init.py but for the env half of the
+    split fix. See #1423.
+
+    Three assertions cover the full split contract:
+    - ENV_MID (after import, before main) is preserved verbatim:
+      regression detector for someone moving the env pop back into
+      __init__.py.
+    - SENTINEL_IN_PATH is False at import time: package-level sys.path
+      filter half of the split actually ran.
+    - ENV_AFTER (after main) is None: CLI entry-point env strip ran.
+
+    SystemExit is caught with a narrowed exit-code check so a future
+    argparse change that exits with a non-zero code (e.g. usage error)
+    surfaces as a test failure instead of being swallowed."""
+    expected_env = f"{_LEAK_PREFIX}/a{os.pathsep}{_LEAK_PREFIX}/b"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = expected_env
+    # Run main() with --version so it exits cleanly without entering any
+    # subcommand. argparse raises SystemExit(0) on --version; the wrapper
+    # asserts the exit code is clean and prints the post-main PYTHONPATH
+    # so the assertion is observable.
+    code = (
+        "import os, sys\n"
+        "from mempalace.cli import main\n"
+        f"prefix = {_LEAK_PREFIX!r}\n"
+        "print('ENV_MID:', repr(os.environ.get('PYTHONPATH')))\n"
+        "print('SENTINEL_IN_PATH:', any(prefix in (p or '') for p in sys.path))\n"
+        "sys.argv = ['mempalace', '--version']\n"
+        "try:\n"
+        "    main()\n"
+        "except SystemExit as exc:\n"
+        "    assert exc.code in (0, None), f'unexpected exit code: {exc.code!r}'\n"
+        "print('ENV_AFTER:', repr(os.environ.get('PYTHONPATH')))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    diag = f"rc={result.returncode}; stdout={result.stdout!r}; stderr={result.stderr!r}"
+    assert result.returncode == 0, f"subprocess failed: {diag}"
+    assert f"ENV_MID: {expected_env!r}" in result.stdout, (
+        f"package import unexpectedly stripped env (regression in __init__.py): {diag}"
+    )
+    assert "SENTINEL_IN_PATH: False" in result.stdout, (
+        f"package import did not filter sys.path (regression in __init__.py): {diag}"
+    )
+    assert "ENV_AFTER: None" in result.stdout, f"CLI did not strip PYTHONPATH: {diag}"
 
 
 # ── cmd_status ─────────────────────────────────────────────────────────
@@ -97,6 +164,13 @@ def test_cmd_hook_calls_run_hook():
         mock_run.assert_called_once_with(hook_name="session-start", harness="claude-code")
 
 
+def test_cmd_hook_session_end_calls_run_hook():
+    args = argparse.Namespace(hook="session-end", harness="claude-code")
+    with patch("mempalace.hooks_cli.run_hook") as mock_run:
+        cmd_hook(args)
+        mock_run.assert_called_once_with(hook_name="session-end", harness="claude-code")
+
+
 # ── cmd_init ───────────────────────────────────────────────────────────
 
 
@@ -106,6 +180,7 @@ def test_cmd_init_no_entities(mock_config_cls, tmp_path):
     with (
         patch("mempalace.entity_detector.scan_for_detection", return_value=[]),
         patch("mempalace.room_detector_local.detect_rooms_local") as mock_rooms,
+        patch("mempalace.cli._maybe_run_mine_after_init"),
     ):
         cmd_init(args)
         mock_rooms.assert_called_once_with(project_dir=str(tmp_path), yes=True)
@@ -123,9 +198,107 @@ def test_cmd_init_with_entities(mock_config_cls, tmp_path):
         patch("mempalace.entity_detector.detect_entities", return_value=detected),
         patch("mempalace.entity_detector.confirm_entities", return_value=confirmed),
         patch("mempalace.room_detector_local.detect_rooms_local"),
+        # Pass 0 (corpus_origin) needs real file IO; this test mocks
+        # builtins.open globally for the entities.json write, which would
+        # break Pass 0's file-reading path. Patch Pass 0 out — a separate
+        # suite (tests/test_corpus_origin_integration.py) covers it directly.
+        patch("mempalace.cli._run_pass_zero", return_value=None),
         patch("builtins.open", MagicMock()),
+        patch("mempalace.cli._maybe_run_mine_after_init"),
     ):
         cmd_init(args)
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_init_normalizes_wing_name_for_topics_registry(mock_config_cls, tmp_path):
+    """Regression for #1194: hyphenated dir names must be normalized to the
+    same slug ``mempalace.yaml`` uses, otherwise ``topics_by_wing`` keys
+    miss the miner's lookup at mine time and tunnels are silently dropped.
+    """
+    project = tmp_path / "my-cool-app"
+    project.mkdir()
+    fake_files = [project / "a.txt"]
+    detected = {
+        "people": [{"name": "Alice"}],
+        "projects": [],
+        "topics": [{"name": "Bun"}],
+        "uncertain": [],
+    }
+    confirmed = {"people": ["Alice"], "projects": [], "topics": ["Bun"]}
+    args = argparse.Namespace(dir=str(project), yes=True)
+    with (
+        patch("mempalace.entity_detector.scan_for_detection", return_value=fake_files),
+        patch("mempalace.entity_detector.detect_entities", return_value=detected),
+        patch("mempalace.entity_detector.confirm_entities", return_value=confirmed),
+        patch("mempalace.miner.add_to_known_entities") as mock_register,
+        patch("mempalace.room_detector_local.detect_rooms_local"),
+        patch("builtins.open", MagicMock()),
+        patch("mempalace.cli._maybe_run_mine_after_init"),
+        # Pass-zero corpus-origin detection runs unconditionally inside
+        # cmd_init now (#1221 / #1223). It accesses MempalaceConfig fields
+        # that don't survive MagicMock stringification, so stub it out —
+        # this test only cares about the wing-slug write to the registry.
+        patch("mempalace.cli._run_pass_zero", return_value=None),
+    ):
+        mock_register.return_value = "/tmp/known_entities.json"
+        cmd_init(args)
+        mock_register.assert_called_once()
+        assert mock_register.call_args.kwargs["wing"] == "my_cool_app"
+
+
+def test_cmd_init_honors_palace_flag(tmp_path, monkeypatch):
+    """Regression for #1313: ``cmd_init`` must honor ``--palace`` instead of
+    silently writing to ``~/.mempalace``. Mirrors the env-var pattern used
+    by ``cmd_mine`` / ``cmd_status`` / ``mcp_server`` so every downstream
+    read of ``cfg.palace_path`` (Pass 0, ``cfg.init()``, post-init mine)
+    routes to the user-specified location.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    palace = tmp_path / "custom_palace"
+
+    # Make sure no leftover env var from another test leaks in — we want to
+    # verify that --palace ALONE drives the resolution. Prime monkeypatch's
+    # undo list with setenv first so that the env var ``cmd_init`` writes
+    # below is rolled back at teardown (``delenv(raising=False)`` on a
+    # missing key registers no undo entry, which would leak into the next
+    # test).
+    monkeypatch.setenv("MEMPALACE_PALACE_PATH", "")
+    monkeypatch.setenv("MEMPAL_PALACE_PATH", "")
+    monkeypatch.delenv("MEMPALACE_PALACE_PATH")
+    monkeypatch.delenv("MEMPAL_PALACE_PATH")
+
+    args = argparse.Namespace(
+        dir=str(project),
+        palace=str(palace),
+        yes=True,
+        auto_mine=False,
+    )
+
+    captured = {}
+
+    def fake_pass_zero(project_dir, palace_dir, llm_provider):
+        # Capture the palace_dir Pass 0 sees — this is the smoking-gun
+        # value for the bug. Pre-fix it was always ~/.mempalace.
+        captured["pass_zero_palace_dir"] = palace_dir
+        return None
+
+    with (
+        patch("mempalace.entity_detector.scan_for_detection", return_value=[]),
+        patch("mempalace.room_detector_local.detect_rooms_local"),
+        patch("mempalace.cli._run_pass_zero", side_effect=fake_pass_zero),
+        patch("mempalace.cli._maybe_run_mine_after_init"),
+    ):
+        cmd_init(args)
+
+    expected = str(palace)
+    # Pass 0 must have been handed the --palace location, not ~/.mempalace.
+    assert captured["pass_zero_palace_dir"] == expected
+    # And the env var must point at the custom palace so any downstream
+    # ``cfg.palace_path`` read in this process resolves correctly too.
+    import os
+
+    assert os.environ.get("MEMPALACE_PALACE_PATH") == os.path.abspath(expected)
 
 
 @patch("mempalace.cli.MempalaceConfig")
@@ -138,10 +311,236 @@ def test_cmd_init_with_entities_zero_total(mock_config_cls, tmp_path, capsys):
         patch("mempalace.entity_detector.scan_for_detection", return_value=fake_files),
         patch("mempalace.entity_detector.detect_entities", return_value=detected),
         patch("mempalace.room_detector_local.detect_rooms_local"),
+        patch("mempalace.cli._maybe_run_mine_after_init"),
     ):
         cmd_init(args)
     out = capsys.readouterr().out
     assert "No entities detected" in out
+
+
+# ── _maybe_run_mine_after_init (init → mine prompt, #1181) ─────────────
+
+
+def _init_args(tmp_path, *, yes=False, auto_mine=False):
+    return argparse.Namespace(dir=str(tmp_path), yes=yes, auto_mine=auto_mine)
+
+
+def _fake_cfg(tmp_path):
+    cfg = MagicMock()
+    cfg.palace_path = str(tmp_path / "palace")
+    return cfg
+
+
+def _fake_scanned(tmp_path, n=3):
+    """Build n real Path objects with stat()-able sizes for the scan estimate."""
+    paths = []
+    for i in range(n):
+        p = tmp_path / f"f{i}.txt"
+        p.write_text("x" * 1024)  # 1 KB each
+        paths.append(p)
+    return paths
+
+
+def test_maybe_run_mine_prompt_accepted_runs_mine(tmp_path):
+    """Empty / 'y' / 'yes' on the prompt triggers mine() in-process."""
+    from mempalace.cli import _maybe_run_mine_after_init
+
+    args = _init_args(tmp_path, yes=False, auto_mine=False)
+    cfg = _fake_cfg(tmp_path)
+    scanned = _fake_scanned(tmp_path, n=3)
+    with (
+        patch("mempalace.miner.mine") as mock_mine,
+        patch("mempalace.miner.scan_project", return_value=scanned),
+        patch("builtins.input", return_value=""),
+    ):
+        _maybe_run_mine_after_init(args, cfg)
+        mock_mine.assert_called_once_with(
+            project_dir=str(tmp_path),
+            palace_path=cfg.palace_path,
+            files=scanned,
+        )
+
+
+def test_maybe_run_mine_prompt_yes_accepted_runs_mine(tmp_path):
+    """Explicit 'y' answer also runs mine()."""
+    from mempalace.cli import _maybe_run_mine_after_init
+
+    args = _init_args(tmp_path, yes=False, auto_mine=False)
+    cfg = _fake_cfg(tmp_path)
+    with (
+        patch("mempalace.miner.mine") as mock_mine,
+        patch("mempalace.miner.scan_project", return_value=[]),
+        patch("builtins.input", return_value="Y"),
+    ):
+        _maybe_run_mine_after_init(args, cfg)
+        mock_mine.assert_called_once()
+
+
+def test_maybe_run_mine_prompt_declined_prints_hint(tmp_path, capsys):
+    """'n' answer skips mine() and prints the resume hint."""
+    from mempalace.cli import _maybe_run_mine_after_init
+
+    args = _init_args(tmp_path, yes=False, auto_mine=False)
+    cfg = _fake_cfg(tmp_path)
+    with (
+        patch("mempalace.miner.mine") as mock_mine,
+        patch("mempalace.miner.scan_project", return_value=[]),
+        patch("builtins.input", return_value="n"),
+    ):
+        _maybe_run_mine_after_init(args, cfg)
+        mock_mine.assert_not_called()
+    out = capsys.readouterr().out
+    # shlex.quote is a no-op on POSIX-safe paths but wraps Windows paths
+    # (which contain backslashes) in single quotes, so the assertion has
+    # to mirror what the production code actually emits.
+    assert f"mempalace mine {shlex.quote(str(tmp_path))}" in out
+    assert "Skipped" in out
+
+
+def test_maybe_run_mine_yes_alone_still_prompts(tmp_path):
+    """`--yes` is scoped to entity auto-accept and MUST still prompt for mine.
+
+    Regression guard for the flag-overload review feedback on #1183: extending
+    `--yes` to also auto-mine would silently change behaviour for scripted
+    callers and turn a fast command into a minutes-long ChromaDB write.
+    """
+    from mempalace.cli import _maybe_run_mine_after_init
+
+    args = _init_args(tmp_path, yes=True, auto_mine=False)
+    cfg = _fake_cfg(tmp_path)
+    with (
+        patch("mempalace.miner.mine") as mock_mine,
+        patch("mempalace.miner.scan_project", return_value=[]),
+        patch("builtins.input", return_value="n") as mock_input,
+    ):
+        _maybe_run_mine_after_init(args, cfg)
+        mock_input.assert_called_once()  # the prompt MUST fire
+        mock_mine.assert_not_called()
+
+
+def test_maybe_run_mine_auto_mine_skips_prompt(tmp_path):
+    """`--auto-mine` runs mine() automatically without calling input()."""
+    from mempalace.cli import _maybe_run_mine_after_init
+
+    args = _init_args(tmp_path, yes=False, auto_mine=True)
+    cfg = _fake_cfg(tmp_path)
+    scanned = _fake_scanned(tmp_path, n=2)
+    with (
+        patch("mempalace.miner.mine") as mock_mine,
+        patch("mempalace.miner.scan_project", return_value=scanned),
+        patch("builtins.input", side_effect=AssertionError("input() must not be called")),
+    ):
+        _maybe_run_mine_after_init(args, cfg)
+        mock_mine.assert_called_once_with(
+            project_dir=str(tmp_path),
+            palace_path=cfg.palace_path,
+            files=scanned,
+        )
+
+
+def test_maybe_run_mine_yes_and_auto_mine_fully_noninteractive(tmp_path):
+    """`--yes --auto-mine` together: never call input(), always mine."""
+    from mempalace.cli import _maybe_run_mine_after_init
+
+    args = _init_args(tmp_path, yes=True, auto_mine=True)
+    cfg = _fake_cfg(tmp_path)
+    with (
+        patch("mempalace.miner.mine") as mock_mine,
+        patch("mempalace.miner.scan_project", return_value=[]),
+        patch("builtins.input", side_effect=AssertionError("input() must not be called")),
+    ):
+        _maybe_run_mine_after_init(args, cfg)
+        mock_mine.assert_called_once()
+
+
+def test_maybe_run_mine_decline_quotes_path_with_spaces(tmp_path, capsys):
+    """The resume hint must shell-quote the project dir so paths with
+    spaces / metacharacters produce a copy-paste-safe command."""
+    from mempalace.cli import _maybe_run_mine_after_init
+
+    spaced_dir = tmp_path / "my project dir"
+    spaced_dir.mkdir()
+    args = argparse.Namespace(dir=str(spaced_dir), yes=False, auto_mine=False)
+    cfg = _fake_cfg(tmp_path)
+    with (
+        patch("mempalace.miner.mine"),
+        patch("mempalace.miner.scan_project", return_value=[]),
+        patch("builtins.input", return_value="n"),
+    ):
+        _maybe_run_mine_after_init(args, cfg)
+    out = capsys.readouterr().out
+    # shlex.quote wraps paths with spaces (and Windows backslashes) in
+    # single quotes — the assertion must use the same shlex form so the
+    # test passes on every platform's tmp_path layout.
+    assert f"mempalace mine {shlex.quote(str(spaced_dir))}" in out
+    # Bare unquoted form must NOT appear — that's the bug we're guarding.
+    assert f"mempalace mine {spaced_dir} " not in out
+    assert f"mempalace mine {spaced_dir}`" not in out
+
+
+def test_maybe_run_mine_eof_on_stdin_treated_as_decline(tmp_path, capsys):
+    """Piped / non-interactive stdin (EOFError) declines without crashing."""
+    from mempalace.cli import _maybe_run_mine_after_init
+
+    args = _init_args(tmp_path, yes=False, auto_mine=False)
+    cfg = _fake_cfg(tmp_path)
+    with (
+        patch("mempalace.miner.mine") as mock_mine,
+        patch("mempalace.miner.scan_project", return_value=[]),
+        patch("builtins.input", side_effect=EOFError),
+    ):
+        _maybe_run_mine_after_init(args, cfg)
+        mock_mine.assert_not_called()
+    assert "Skipped" in capsys.readouterr().out
+
+
+def test_maybe_run_mine_failure_surfaces_via_exit(tmp_path, capsys):
+    """Mine errors are not swallowed — they exit non-zero with an error line."""
+    from mempalace.cli import _maybe_run_mine_after_init
+
+    args = _init_args(tmp_path, yes=False, auto_mine=True)
+    cfg = _fake_cfg(tmp_path)
+    with (
+        patch("mempalace.miner.mine", side_effect=RuntimeError("boom")),
+        patch("mempalace.miner.scan_project", return_value=[]),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _maybe_run_mine_after_init(args, cfg)
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "boom" in err
+
+
+def test_maybe_run_mine_estimate_appears_before_prompt(tmp_path, capsys):
+    """The file-count + size estimate line MUST render BEFORE the prompt.
+
+    Required by the spec: hitting Enter on a default-Y prompt with no size
+    info is a footgun on a real corpus where mine takes minutes. The user
+    must see scope before being asked to confirm.
+    """
+    from mempalace.cli import _maybe_run_mine_after_init
+
+    args = _init_args(tmp_path, yes=False, auto_mine=False)
+    cfg = _fake_cfg(tmp_path)
+    scanned = _fake_scanned(tmp_path, n=4)  # 4 files * 1 KB each
+    captured_when_prompted = {}
+
+    def fake_input(prompt):
+        # Snapshot what stdout looked like at the moment the prompt fires.
+        captured_when_prompted["stdout"] = capsys.readouterr().out
+        return "n"
+
+    with (
+        patch("mempalace.miner.mine"),
+        patch("mempalace.miner.scan_project", return_value=scanned),
+        patch("builtins.input", side_effect=fake_input),
+    ):
+        _maybe_run_mine_after_init(args, cfg)
+
+    pre_prompt = captured_when_prompted["stdout"]
+    assert "4 files" in pre_prompt, f"file count missing from pre-prompt output: {pre_prompt!r}"
+    assert "MB" in pre_prompt, f"size estimate missing from pre-prompt output: {pre_prompt!r}"
+    assert "would be mined" in pre_prompt
 
 
 # ── cmd_mine ───────────────────────────────────────────────────────────
@@ -173,6 +572,7 @@ def test_cmd_mine_projects_mode(mock_config_cls):
             dry_run=False,
             respect_gitignore=True,
             include_ignored=[],
+            max_chunks_per_file=None,
         )
 
 
@@ -224,6 +624,103 @@ def test_cmd_mine_include_ignored_comma_split(mock_config_cls):
         mock_mine.assert_called_once()
         call_kwargs = mock_mine.call_args[1]
         assert call_kwargs["include_ignored"] == ["a.txt", "b.txt", "c.txt"]
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_mine_daemon_background_submits_job(mock_config_cls, capsys):
+    mock_config_cls.return_value.palace_path = "/fake/palace"
+    args = argparse.Namespace(
+        dir="/src",
+        palace=None,
+        mode="projects",
+        wing=None,
+        agent="mempalace",
+        limit=0,
+        dry_run=False,
+        no_gitignore=False,
+        include_ignored=["a.txt,b.txt"],
+        extract="exchange",
+        daemon=True,
+        background=True,
+        backend=None,
+        global_backend=None,
+        max_chunks_per_file=None,
+        redetect_origin=False,
+    )
+    with patch("mempalace.daemon.submit_job", return_value={"id": "job-1"}) as mock_submit:
+        with patch("mempalace.miner.mine") as mock_mine:
+            cmd_mine(args)
+
+    mock_mine.assert_not_called()
+    mock_submit.assert_called_once()
+    call_kwargs = mock_submit.call_args.kwargs
+    assert call_kwargs["palace_path"] == "/fake/palace"
+    assert call_kwargs["wait"] is False
+    payload = mock_submit.call_args.args[1]
+    assert payload["include_ignored"] == ["a.txt", "b.txt"]
+    assert "job-1" in capsys.readouterr().out
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_mine_background_requires_daemon(mock_config_cls, capsys):
+    mock_config_cls.return_value.palace_path = "/fake/palace"
+    args = argparse.Namespace(
+        dir="/src",
+        palace=None,
+        mode="projects",
+        wing=None,
+        agent="mempalace",
+        limit=0,
+        dry_run=False,
+        no_gitignore=False,
+        include_ignored=[],
+        extract="exchange",
+        daemon=False,
+        background=True,
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        cmd_mine(args)
+    assert excinfo.value.code == 2
+    assert "--background requires --daemon" in capsys.readouterr().err
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_mine_exits_nonzero_on_lock_holder(mock_config_cls, capsys):
+    """Regression #1264: lock contention must exit non-zero with a clear message.
+
+    Before this fix the CLI silently returned 0 when another writer held
+    the palace lock — operators using nohup/scripts had no way to detect
+    the contention. The new behavior raises MineAlreadyRunning out of
+    miner.mine() and cmd_mine catches it, printing the holder identity
+    to stderr and exiting non-zero.
+    """
+    from mempalace.palace import MineAlreadyRunning
+
+    mock_config_cls.return_value.palace_path = "/fake/palace"
+    args = argparse.Namespace(
+        dir="/src",
+        palace=None,
+        mode="projects",
+        wing=None,
+        agent="mempalace",
+        limit=0,
+        dry_run=False,
+        no_gitignore=False,
+        include_ignored=[],
+        extract="exchange",
+    )
+    with patch(
+        "mempalace.miner.mine",
+        side_effect=MineAlreadyRunning(
+            "palace /fake/palace is held by PID 12345 (mempalace mcp_server); wait for it to finish"
+        ),
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            cmd_mine(args)
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "PID 12345" in captured.err
+    assert "mcp_server" in captured.err
 
 
 # ── cmd_wakeup ─────────────────────────────────────────────────────────
@@ -280,6 +777,40 @@ def test_main_status_dispatches():
         mock_cmd.assert_called_once()
 
 
+def test_main_backend_flag_sets_explicit_backend(monkeypatch):
+    monkeypatch.delenv("MEMPALACE_BACKEND_EXPLICIT", raising=False)
+    monkeypatch.delenv("MEMPALACE_BACKEND", raising=False)
+    with (
+        patch("sys.argv", ["mempalace", "status", "--backend", "sqlite_exact"]),
+        patch("mempalace.cli.cmd_status") as mock_cmd,
+    ):
+        main()
+
+    mock_cmd.assert_called_once()
+    args = mock_cmd.call_args.args[0]
+    assert args.backend == "sqlite_exact"
+    assert os.environ["MEMPALACE_BACKEND_EXPLICIT"] == "sqlite_exact"
+    os.environ.pop("MEMPALACE_BACKEND_EXPLICIT", None)
+    os.environ.pop("MEMPALACE_BACKEND", None)
+
+
+def test_main_backend_flag_accepts_qdrant(monkeypatch):
+    monkeypatch.delenv("MEMPALACE_BACKEND_EXPLICIT", raising=False)
+    monkeypatch.delenv("MEMPALACE_BACKEND", raising=False)
+    with (
+        patch("sys.argv", ["mempalace", "status", "--backend", "qdrant"]),
+        patch("mempalace.cli.cmd_status") as mock_cmd,
+    ):
+        main()
+
+    mock_cmd.assert_called_once()
+    args = mock_cmd.call_args.args[0]
+    assert args.backend == "qdrant"
+    assert os.environ["MEMPALACE_BACKEND_EXPLICIT"] == "qdrant"
+    os.environ.pop("MEMPALACE_BACKEND_EXPLICIT", None)
+    os.environ.pop("MEMPALACE_BACKEND", None)
+
+
 def test_main_search_dispatches():
     with (
         patch("sys.argv", ["mempalace", "search", "my query"]),
@@ -332,9 +863,10 @@ def test_mcp_command_prints_setup_guidance(monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert "MemPalace MCP quick setup:" in captured.out
-    assert "claude mcp add mempalace -- python -m mempalace.mcp_server" in captured.out
+    assert "claude mcp add mempalace -- mempalace-mcp" in captured.out
+    assert "codex mcp add mempalace -- mempalace-mcp" in captured.out
     assert "\nOptional custom palace:\n" in captured.out
-    assert "python -m mempalace.mcp_server --palace /path/to/palace" in captured.out
+    assert "mempalace-mcp --palace /path/to/palace" in captured.out
     assert "[--palace /path/to/palace]" not in captured.out
     assert captured.err == ""
 
@@ -347,11 +879,41 @@ def test_mcp_command_uses_custom_palace_path_when_provided(monkeypatch, capsys):
     captured = capsys.readouterr()
     expanded = str(Path("~/tmp/my palace").expanduser())
 
-    assert "python -m mempalace.mcp_server --palace" in captured.out
+    assert "mempalace-mcp --palace" in captured.out
     assert expanded in captured.out
+    assert "claude mcp add mempalace -- mempalace-mcp --palace" in captured.out
+    assert "codex mcp add mempalace -- mempalace-mcp --palace" in captured.out
     assert "Optional custom palace:" not in captured.out
     assert "[--palace /path/to/palace]" not in captured.out
     assert captured.err == ""
+
+
+def test_mcp_command_includes_backend_when_provided(monkeypatch, capsys):
+    monkeypatch.delenv("MEMPALACE_BACKEND_EXPLICIT", raising=False)
+    monkeypatch.delenv("MEMPALACE_BACKEND", raising=False)
+    monkeypatch.setattr(sys, "argv", ["mempalace", "mcp", "--backend", "sqlite_exact"])
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "mempalace-mcp --backend sqlite_exact" in captured.out
+    assert captured.err == ""
+    os.environ.pop("MEMPALACE_BACKEND_EXPLICIT", None)
+    os.environ.pop("MEMPALACE_BACKEND", None)
+
+
+def test_mcp_command_includes_qdrant_backend(monkeypatch, capsys):
+    monkeypatch.delenv("MEMPALACE_BACKEND_EXPLICIT", raising=False)
+    monkeypatch.delenv("MEMPALACE_BACKEND", raising=False)
+    monkeypatch.setattr(sys, "argv", ["mempalace", "mcp", "--backend", "qdrant"])
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "mempalace-mcp --backend qdrant" in captured.out
+    assert captured.err == ""
+    os.environ.pop("MEMPALACE_BACKEND_EXPLICIT", None)
+    os.environ.pop("MEMPALACE_BACKEND", None)
 
 
 def test_main_hook_no_subcommand_prints_help(capsys):
@@ -366,6 +928,18 @@ def test_main_hook_run_dispatches():
         patch(
             "sys.argv",
             ["mempalace", "hook", "run", "--hook", "session-start", "--harness", "claude-code"],
+        ),
+        patch("mempalace.cli.cmd_hook") as mock_cmd,
+    ):
+        main()
+        mock_cmd.assert_called_once()
+
+
+def test_main_hook_run_dispatches_session_end():
+    with (
+        patch(
+            "sys.argv",
+            ["mempalace", "hook", "run", "--hook", "session-end", "--harness", "claude-code"],
         ),
         patch("mempalace.cli.cmd_hook") as mock_cmd,
     ):
@@ -396,3 +970,313 @@ def test_main_compress_dispatches():
     ):
         main()
         mock_cmd.assert_called_once()
+
+
+# ── cmd_compress ───────────────────────────────────────────────────────
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_sync_no_palace_dir(mock_config_cls, tmp_path, capsys):
+    """cmd_sync on a missing palace dir prints the State A message (#1498)."""
+    from mempalace.cli import cmd_sync
+
+    palace_path = tmp_path / "nonexistent"
+    mock_config_cls.return_value.palace_path = str(palace_path)
+    args = argparse.Namespace(palace=None, dir=None, root=[], wing=None, dry_run=False)
+    cmd_sync(args)
+    captured = capsys.readouterr()
+    assert "No palace found" in captured.out + captured.err
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_sync_palace_dir_no_db(mock_config_cls, tmp_path, capsys):
+    """cmd_sync on a palace dir without chroma.sqlite3 prints the State B
+    message and does NOT trigger chromadb's lazy DB creation (#1498)."""
+    from mempalace.cli import cmd_sync
+
+    mock_config_cls.return_value.palace_path = str(tmp_path)
+    args = argparse.Namespace(palace=None, dir=None, root=[], wing=None, dry_run=False)
+    cmd_sync(args)
+    captured = capsys.readouterr()
+    assert "has no chroma.sqlite3 yet" in captured.out + captured.err
+    # Side-effect-free: backend not invoked.
+    assert list(tmp_path.iterdir()) == []
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_sync_daemon_background_submits_job(mock_config_cls, capsys):
+    from mempalace.cli import cmd_sync
+
+    mock_config_cls.return_value.palace_path = "/fake/palace"
+    args = argparse.Namespace(
+        palace=None,
+        dir="/project",
+        root=["/extra"],
+        wing="wing_a",
+        dry_run=False,
+        daemon=True,
+        background=True,
+        backend=None,
+        global_backend=None,
+    )
+    with patch("mempalace.daemon.submit_job", return_value={"id": "sync-job"}) as mock_submit:
+        cmd_sync(args)
+
+    mock_submit.assert_called_once()
+    assert mock_submit.call_args.args[0] == "sync"
+    payload = mock_submit.call_args.args[1]
+    assert payload == {"dir": "/project", "root": ["/extra"], "wing": "wing_a", "dry_run": False}
+    assert mock_submit.call_args.kwargs["wait"] is False
+    assert "sync-job" in capsys.readouterr().out
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_daemon_jobs_reads_durable_queue_when_stopped(
+    mock_config_cls, tmp_path, monkeypatch, capsys
+):
+    from mempalace.daemon import QueueStore, queue_path
+
+    palace_dir = tmp_path / "palace"
+    state_root = tmp_path / "state"
+    palace_dir.mkdir()
+    monkeypatch.setenv("MEMPALACE_DAEMON_STATE_ROOT", str(state_root))
+    mock_config_cls.return_value.palace_path = str(palace_dir)
+    job = QueueStore(queue_path(str(palace_dir))).enqueue("mine", {"source": "/src"})
+
+    args = argparse.Namespace(
+        palace=None,
+        backend=None,
+        global_backend=None,
+        daemon_action="jobs",
+        limit=20,
+    )
+    with patch("mempalace.daemon.get_client_if_running", return_value=None):
+        cmd_daemon(args)
+
+    out = capsys.readouterr().out
+    assert job.id in out
+    assert "queued" in out
+    assert "mine" in out
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_daemon_wait_reads_finished_job_when_stopped(
+    mock_config_cls, tmp_path, monkeypatch, capsys
+):
+    from mempalace.daemon import QueueStore, queue_path
+
+    palace_dir = tmp_path / "palace"
+    state_root = tmp_path / "state"
+    palace_dir.mkdir()
+    monkeypatch.setenv("MEMPALACE_DAEMON_STATE_ROOT", str(state_root))
+    mock_config_cls.return_value.palace_path = str(palace_dir)
+    store = QueueStore(queue_path(str(palace_dir)))
+    queued = store.enqueue("mine", {"source": "/src"})
+    store.finish(
+        queued.id,
+        state="succeeded",
+        result={"success": True, "stdout": "done\n", "exit_code": 0},
+    )
+
+    args = argparse.Namespace(
+        palace=None,
+        backend=None,
+        global_backend=None,
+        daemon_action="wait",
+        job_id=queued.id,
+    )
+    with patch("mempalace.daemon.get_client_if_running", return_value=None):
+        cmd_daemon(args)
+
+    assert "done" in capsys.readouterr().out
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_compress_no_palace(mock_config_cls, tmp_path, capsys):
+    """cmd_compress exits non-zero with a 'No palace found' message on a missing dir.
+
+    Uses a real non-existent tmp_path so the stratified state helper (#1498)
+    walks the State A branch instead of hitting the chromadb backend.
+    """
+    mock_config_cls.return_value.palace_path = str(tmp_path / "nonexistent")
+    args = argparse.Namespace(palace=None, wing=None, dry_run=False, config=None)
+    with pytest.raises(SystemExit):
+        cmd_compress(args)
+    assert "No palace found" in capsys.readouterr().out
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_compress_no_drawers(mock_config_cls, capsys):
+    mock_config_cls.return_value.palace_path = "/fake/palace"
+    args = argparse.Namespace(palace=None, wing="mywing", dry_run=False, config=None)
+    mock_col = MagicMock()
+    mock_col.get.return_value = {"documents": [], "metadatas": [], "ids": []}
+    with patch("mempalace.palace._open_collection_or_explain", return_value=mock_col):
+        cmd_compress(args)
+    out = capsys.readouterr().out
+    assert "No drawers found" in out
+
+
+def _make_mock_dialect_module(dialect_instance):
+    """Create a mock dialect module with a Dialect class that returns the given instance."""
+    mock_mod = MagicMock()
+    mock_mod.Dialect.return_value = dialect_instance
+    mock_mod.Dialect.from_config.return_value = dialect_instance
+    mock_mod.Dialect.count_tokens = MagicMock(side_effect=lambda x: len(x) // 4)
+    return mock_mod
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_compress_dry_run(mock_config_cls, capsys):
+    mock_config_cls.return_value.palace_path = "/fake/palace"
+    args = argparse.Namespace(palace=None, wing=None, dry_run=True, config=None)
+    mock_col = MagicMock()
+    mock_col.get.side_effect = [
+        {
+            "documents": ["some long text here for testing"],
+            "metadatas": [{"wing": "test", "room": "general", "source_file": "test.txt"}],
+            "ids": ["id1"],
+        },
+        {"documents": [], "metadatas": [], "ids": []},
+    ]
+    mock_dialect = MagicMock()
+    mock_dialect.compress.return_value = "compressed"
+    mock_dialect.compression_stats.return_value = {
+        "original_chars": 100,
+        "summary_chars": 30,
+        "original_tokens_est": 25,
+        "summary_tokens_est": 8,
+        "size_ratio": 3.3,
+        "note": "Estimates only.",
+    }
+    mock_dialect_mod = _make_mock_dialect_module(mock_dialect)
+
+    with (
+        patch("mempalace.palace._open_collection_or_explain", return_value=mock_col),
+        patch.dict("sys.modules", {"mempalace.dialect": mock_dialect_mod}),
+    ):
+        cmd_compress(args)
+    out = capsys.readouterr().out
+    assert "dry run" in out.lower()
+    assert "Compressing" in out
+    assert "Total:" in out
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_compress_with_config(mock_config_cls, tmp_path, capsys):
+    mock_config_cls.return_value.palace_path = "/fake/palace"
+    config_file = tmp_path / "entities.json"
+    config_file.write_text('{"people": [], "projects": []}')
+    args = argparse.Namespace(palace=None, wing=None, dry_run=True, config=str(config_file))
+    mock_col = MagicMock()
+    mock_col.get.return_value = {"documents": [], "metadatas": [], "ids": []}
+
+    mock_dialect = MagicMock()
+    mock_dialect_mod = _make_mock_dialect_module(mock_dialect)
+
+    with (
+        patch("mempalace.palace._open_collection_or_explain", return_value=mock_col),
+        patch.dict("sys.modules", {"mempalace.dialect": mock_dialect_mod}),
+    ):
+        cmd_compress(args)
+    out = capsys.readouterr().out
+    assert "Loaded entity config" in out
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_compress_stores_results(mock_config_cls, capsys):
+    """Non-dry-run compress stores to mempalace_closets collection (#1244)."""
+    mock_config_cls.return_value.palace_path = "/fake/palace"
+    args = argparse.Namespace(palace=None, wing=None, dry_run=False, config=None)
+    mock_col = MagicMock()
+    mock_col.get.side_effect = [
+        {
+            "documents": ["text"],
+            "metadatas": [{"wing": "w", "room": "r", "source_file": "f.txt"}],
+            "ids": ["id1"],
+        },
+        {"documents": [], "metadatas": [], "ids": []},
+    ]
+    mock_comp_col = MagicMock()
+    mock_backend = MagicMock()
+    mock_backend.get_collection.return_value = mock_col
+    mock_backend.get_or_create_collection.return_value = mock_comp_col
+
+    mock_dialect = MagicMock()
+    mock_dialect.compress.return_value = "compressed"
+    mock_dialect.compression_stats.return_value = {
+        "original_chars": 100,
+        "summary_chars": 30,
+        "original_tokens_est": 25,
+        "summary_tokens_est": 8,
+        "size_ratio": 3.3,
+        "note": "Estimates only.",
+    }
+    mock_dialect_mod = _make_mock_dialect_module(mock_dialect)
+
+    with (
+        patch("mempalace.palace._open_collection_or_explain", return_value=mock_col),
+        patch("mempalace.palace.get_closets_collection", return_value=mock_comp_col),
+        patch.dict("sys.modules", {"mempalace.dialect": mock_dialect_mod}),
+    ):
+        cmd_compress(args)
+    out = capsys.readouterr().out
+    assert "Stored" in out
+    assert "Total:" in out
+    mock_comp_col.upsert.assert_called_once()
+    assert "mempalace_closets" in out
+
+
+# ── stdio reconfigure on Windows ─────────────────────────────────────
+
+
+class _ReconfigurableStringIO:
+    def __init__(self):
+        self.reconfigure_calls = []
+
+    def reconfigure(self, **kwargs):
+        self.reconfigure_calls.append(kwargs)
+
+
+def test_reconfigures_stdio_to_utf8_on_windows():
+    """Windows `mempalace` CLI must decode/encode stdio as UTF-8.
+
+    Without this, piped non-ASCII input (`mempalace search ... < q.txt`)
+    or piped non-ASCII output (`mempalace search "..." > out.txt`) is
+    mojibaked through the system ANSI codepage on non-Latin Windows
+    locales (cp1252/cp1251/cp950).
+    """
+    from mempalace.cli import _reconfigure_stdio_utf8_on_windows
+
+    stdin = _ReconfigurableStringIO()
+    stdout = _ReconfigurableStringIO()
+    stderr = _ReconfigurableStringIO()
+    with (
+        patch.object(sys, "platform", "win32"),
+        patch.object(sys, "stdin", stdin),
+        patch.object(sys, "stdout", stdout),
+        patch.object(sys, "stderr", stderr),
+    ):
+        _reconfigure_stdio_utf8_on_windows()
+
+    # Per-stream errors policy: stdin survives bad bytes via
+    # surrogateescape so a redirected non-UTF-8 file does not crash
+    # the read; stdout/stderr use replace so a drawer carrying a
+    # round-tripped surrogate half does not crash mid-print.
+    assert stdin.reconfigure_calls == [{"encoding": "utf-8", "errors": "surrogateescape"}]
+    assert stdout.reconfigure_calls == [{"encoding": "utf-8", "errors": "replace"}]
+    assert stderr.reconfigure_calls == [{"encoding": "utf-8", "errors": "replace"}]
+
+
+def test_reconfigure_stdio_is_noop_off_windows():
+    """Linux/macOS already default to UTF-8 stdio -- helper must not touch streams."""
+    from mempalace.cli import _reconfigure_stdio_utf8_on_windows
+
+    stdin = _ReconfigurableStringIO()
+    with (
+        patch.object(sys, "platform", "linux"),
+        patch.object(sys, "stdin", stdin),
+    ):
+        _reconfigure_stdio_utf8_on_windows()
+
+    assert stdin.reconfigure_calls == []

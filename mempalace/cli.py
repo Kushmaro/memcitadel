@@ -2,9 +2,10 @@
 """
 MemPalace — Give your AI a memory. No API key required.
 
-Two ways to ingest:
-  Projects:      mempalace mine ~/projects/my_app          (code, docs, notes)
-  Conversations: mempalace mine <convo-dir> --mode convos     (Claude Code, Claude.ai, ChatGPT, Slack exports)
+Three ways to ingest:
+  Projects:      mempalace mine ~/projects/my_app                  (code, docs, notes)
+  Conversations: mempalace mine <convo-dir> --mode convos          (Claude Code, Claude.ai, ChatGPT, Slack exports)
+  Documents:     mempalace mine <docs-dir> --mode extract          (PDF, DOCX, PPTX, XLSX, RTF, EPUB — requires mempalace[extract])
 
 Same palace. Same search. Different ingest strategies.
 
@@ -13,6 +14,7 @@ Commands:
     mempalace split <dir>                 Split concatenated mega-files into per-session files
     mempalace mine <dir>                  Mine project files (default)
     mempalace mine <dir> --mode convos    Mine conversation exports
+    mempalace mine <dir> --mode extract   Mine binary office documents (PDF/DOCX/etc.)
     mempalace search "query"              Find anything, exact words
     mempalace mcp                         Show MCP setup command
     mempalace wake-up                     Show L0 + L1 wake-up context
@@ -34,10 +36,191 @@ import argparse
 from pathlib import Path
 
 from .config import MempalaceConfig
+from .corpus_origin import detect_origin_heuristic, detect_origin_llm
+from .llm_client import LLMError, get_provider
 from .version import __version__
 
 
 _MEMPALACE_PROJECT_FILES = ("mempalace.yaml", "entities.json")
+
+# Pass 0 corpus-origin sampling caps. Tier 1 reads FULL file content (no
+# front-bias sampling) but bounds total memory on enormous corpora. Tier 2
+# trims to a smaller view because LLM context windows are finite.
+_PASS_ZERO_MAX_FILES = 30
+_PASS_ZERO_PER_FILE_CAP = 100_000  # 100KB per file is generous for prose
+_PASS_ZERO_TOTAL_CAP = 5_000_000  # 5MB total ceiling — bounds memory
+_PASS_ZERO_LLM_PER_SAMPLE = 2_000  # for Tier 2 LLM call only
+_PASS_ZERO_LLM_MAX_SAMPLES = 20  # caps the LLM-tier sample count
+_EXPLICIT_BACKEND_ENV = "MEMPALACE_BACKEND_EXPLICIT"
+
+# Keep parser construction lightweight for --version and hook commands.
+# This mirrors miner.MAX_CHUNKS_PER_FILE without importing miner here;
+# importing miner pulls in Chroma dependencies before argparse can handle
+# lightweight exits such as --version.
+_CLI_MAX_CHUNKS_PER_FILE_DEFAULT = 50_000
+
+
+def _backend_arg(args):
+    """Return a CLI-selected backend from subcommand or global flags."""
+    return getattr(args, "backend", None) or getattr(args, "global_backend", None)
+
+
+def _apply_backend_arg(args) -> None:
+    backend = _backend_arg(args)
+    if not backend:
+        return
+    backend = str(backend).strip().lower()
+    from .backends import get_backend_class
+
+    get_backend_class(backend)
+    os.environ[_EXPLICIT_BACKEND_ENV] = backend
+    os.environ["MEMPALACE_BACKEND"] = backend
+
+
+def _gather_origin_samples(project_dir) -> list:
+    """Collect Tier-1 samples for corpus-origin detection.
+
+    Reads FULL file content (capped at ``_PASS_ZERO_PER_FILE_CAP`` per file
+    and ``_PASS_ZERO_TOTAL_CAP`` overall). No front-bias sampling — AI
+    signal that lives past the first N chars of a file must still trip
+    detection, so we read the whole file up to the cap.
+
+    Skips mempalace's own per-project artifacts (``entities.json``,
+    ``mempalace.yaml``) so a re-run of ``mempalace init`` produces the
+    same classification result it did on the first run. Without this
+    filter, the first run writes entities.json into the corpus, the
+    second run picks it up as a sample, and the Tier-1 density math
+    drifts (different total_chars). That makes init non-idempotent.
+
+    Returns a list of strings (one per readable file). Empty list when
+    the project has no readable text.
+    """
+    from .entity_detector import scan_for_detection
+
+    files = scan_for_detection(project_dir, max_files=_PASS_ZERO_MAX_FILES)
+    samples: list = []
+    total_chars = 0
+    for filepath in files:
+        if filepath.name in _MEMPALACE_PROJECT_FILES:
+            continue
+        if total_chars >= _PASS_ZERO_TOTAL_CAP:
+            break
+        try:
+            with open(filepath, encoding="utf-8", errors="replace") as f:
+                content = f.read(_PASS_ZERO_PER_FILE_CAP)
+        except OSError:
+            continue
+        if not content:
+            continue
+        samples.append(content)
+        total_chars += len(content)
+    return samples
+
+
+def _trim_samples_for_llm(samples: list) -> list:
+    """Reduce Tier-1 full-content samples to LLM-friendly size.
+
+    Tier 2 hits an LLM with a finite context window — we trim each sample
+    to ``_PASS_ZERO_LLM_PER_SAMPLE`` chars and cap the overall sample
+    count at ``_PASS_ZERO_LLM_MAX_SAMPLES``.
+    """
+    return [s[:_PASS_ZERO_LLM_PER_SAMPLE] for s in samples[:_PASS_ZERO_LLM_MAX_SAMPLES]]
+
+
+def _run_pass_zero(project_dir, palace_dir, llm_provider) -> dict:
+    """Pass 0: detect whether the corpus is AI-dialogue and persist the
+    result to ``<palace>/.mempalace/origin.json``.
+
+    Returns the wrapped result dict (same shape as origin.json) on success,
+    or ``None`` when there are no readable samples to detect from. The
+    return value is what cmd_init forwards to ``discover_entities`` via
+    the ``corpus_origin`` kwarg.
+
+    File-write failures (e.g. read-only palace) are caught and reported on
+    stderr; init never blocks on them.
+    """
+    import json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    samples = _gather_origin_samples(project_dir)
+    if not samples:
+        print("  Skipping corpus-origin detection — no readable samples.")
+        return None
+
+    # Tier 1 — always runs. Cheap regex grep, no API.
+    result = detect_origin_heuristic(samples)
+
+    # Tier 2 — runs only when an LLM provider is available. The provider
+    # contract is best-effort: corpus_origin internally falls back to a
+    # conservative default on transport/parse failure, so we don't need a
+    # try/except here, but we still keep one for any unforeseen exception.
+    #
+    # MERGE-FIELDS, NOT REPLACE: Tier 2's persona/user/platform extraction
+    # is the whole reason to run it, but a weak local model (e.g. Ollama
+    # gemma4:e4b) can return a wrong likely_ai_dialogue/confidence call
+    # that overrides a confident heuristic answer. Per @igorls's review of
+    # PR #1211: keep the heuristic's likely_ai_dialogue + confidence
+    # (don't let a weak LLM flip a confident regex answer), and merge in
+    # LLM's persona-related fields + combined evidence.
+    if llm_provider is not None:
+        try:
+            llm_result = detect_origin_llm(_trim_samples_for_llm(samples), llm_provider)
+            # Heuristic owns: likely_ai_dialogue, confidence (do NOT touch).
+            # LLM contributes: primary_platform, user_name, agent_persona_names
+            # (heuristic doesn't extract any of these).
+            if llm_result.primary_platform:
+                result.primary_platform = llm_result.primary_platform
+            if llm_result.user_name:
+                result.user_name = llm_result.user_name
+            if llm_result.agent_persona_names:
+                result.agent_persona_names = list(llm_result.agent_persona_names)
+            # Combine evidence — keep both signal trails for the audit record,
+            # prefixed so the on-disk origin.json says which tier produced
+            # each entry. Idempotent: re-prefixing an already-tagged entry
+            # is a no-op.
+            tier1_prefix = "Tier-1 heuristic: "
+            tier2_prefix = "Tier-2 LLM: "
+            heuristic_evidence = [
+                s if s.startswith(tier1_prefix) else f"{tier1_prefix}{s}"
+                for s in (str(e) for e in result.evidence)
+            ]
+            llm_evidence = [
+                s if s.startswith(tier2_prefix) else f"{tier2_prefix}{s}"
+                for s in (str(e) for e in llm_result.evidence)
+            ]
+            result.evidence = heuristic_evidence + llm_evidence
+        except Exception as exc:  # noqa: BLE001 — never block init on LLM failure
+            print(f"  LLM corpus-origin tier failed ({exc}); using heuristic only.")
+
+    wrapped = {
+        "schema_version": 1,
+        "detected_at": datetime.now(timezone.utc).isoformat(),
+        "result": result.to_dict(),
+    }
+
+    origin_path = Path(palace_dir).expanduser() / ".mempalace" / "origin.json"
+    try:
+        origin_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(origin_path, "w", encoding="utf-8") as f:
+            json.dump(wrapped, f, indent=2, ensure_ascii=False)
+    except OSError as exc:
+        print(f"  Could not write {origin_path}: {exc}", file=sys.stderr)
+        # Return the wrapped dict anyway so the in-memory pipeline still
+        # benefits from the detection result this run.
+        return wrapped
+
+    # Banner — one line, two-space indent matching existing init style.
+    res = result
+    if res.likely_ai_dialogue:
+        platform = res.primary_platform or "AI dialogue (platform unidentified)"
+        user = res.user_name or "—"
+        agents = ", ".join(res.agent_persona_names) if res.agent_persona_names else "—"
+        print(f"  Detected: {platform} (user: {user}, agents: {agents})")
+    else:
+        print(f"  Corpus origin: not AI-dialogue (confidence: {res.confidence:.2f})")
+
+    return wrapped
 
 
 def _ensure_mempalace_files_gitignored(project_dir) -> bool:
@@ -71,8 +254,16 @@ def _ensure_mempalace_files_gitignored(project_dir) -> bool:
 def cmd_init(args):
     import json
     from pathlib import Path
-    from .entity_detector import scan_for_detection, detect_entities, confirm_entities
+    from .entity_detector import confirm_entities
+    from .project_scanner import discover_entities
     from .room_detector_local import detect_rooms_local
+
+    # Honor --palace (issue #1313): without this, init silently ignored the
+    # flag and always used ~/.mempalace. Mirror the env-var pattern used by
+    # mcp_server.py so every downstream read of ``cfg.palace_path`` (Pass 0,
+    # cfg.init(), the post-init mine) routes to the user-specified location.
+    if getattr(args, "palace", None):
+        os.environ["MEMPALACE_PALACE_PATH"] = os.path.abspath(os.path.expanduser(args.palace))
 
     cfg = MempalaceConfig()
 
@@ -85,32 +276,241 @@ def cmd_init(args):
         languages = cfg.entity_languages
     languages_tuple = tuple(languages)
 
-    # Pass 1: auto-detect people and projects from file content
+    # --llm is ON by default. --no-llm is the explicit opt-out. Provider
+    # precedence is unchanged (Ollama localhost first, then openai-compat,
+    # then anthropic). Never block init on a missing LLM: when no provider
+    # responds, print a one-line message pointing at --no-llm and fall
+    # through to heuristics-only.
+    llm_provider = None
+    if not getattr(args, "no_llm", False):
+        provider_name = getattr(args, "llm_provider", "ollama") or "ollama"
+        provider_model = getattr(args, "llm_model", "gemma4:e4b") or "gemma4:e4b"
+        try:
+            candidate = get_provider(
+                name=provider_name,
+                model=provider_model,
+                endpoint=getattr(args, "llm_endpoint", None),
+                api_key=getattr(args, "llm_api_key", None),
+            )
+            ok, msg = candidate.check_available()
+            if ok:
+                llm_provider = candidate
+                print(f"  LLM enabled: {provider_name}/{provider_model}")
+                # Privacy warning (issue #24): if the configured endpoint
+                # sends data off the user's machine/network, surface that
+                # before init proceeds. URL-based — Ollama on localhost,
+                # LM Studio on LAN, etc. won't trigger; Anthropic /
+                # cloud OpenAI-compat / any non-local endpoint will.
+                if candidate.is_external_service:
+                    print(
+                        f"  ⚠ {provider_name} is an EXTERNAL API. Your folder "
+                        f"content will be sent to the provider during init. "
+                        f"MemPalace does not control how the provider logs, "
+                        f"retains, or uses your data. Pass --no-llm to keep "
+                        f"init fully local."
+                    )
+                    # Consent gate (issue #26): block init when the api_key
+                    # was acquired via env-fallback (stray credential in
+                    # shell env). Explicit --llm-api-key (api_key_source ==
+                    # "flag") means the user already opted in.
+                    # --accept-external-llm bypasses for CI / non-interactive.
+                    api_key_source = getattr(candidate, "api_key_source", None)
+                    accept_flag = getattr(args, "accept_external_llm", False)
+                    if api_key_source == "env" and not accept_flag:
+                        try:
+                            answer = (
+                                input(
+                                    "  Your API key was loaded from the environment "
+                                    "(not passed via --llm-api-key). Continue with "
+                                    "external LLM? [y/N] "
+                                )
+                                .strip()
+                                .lower()
+                            )
+                        except EOFError:
+                            answer = ""
+                        if answer != "y":
+                            print(
+                                "  Declined — falling back to heuristics-only. "
+                                "Pass --llm-api-key explicitly or "
+                                "--accept-external-llm to skip this prompt."
+                            )
+                            llm_provider = None
+            else:
+                print(
+                    f"  No LLM provider reachable ({msg}). "
+                    f"Running heuristics-only — pass --no-llm to silence this."
+                )
+        except LLMError as e:
+            print(
+                f"  LLM init failed ({e}). Running heuristics-only — pass --no-llm to silence this."
+            )
+
+    # Pass 0: detect whether the corpus is AI-dialogue. Writes
+    # <palace>/.mempalace/origin.json and supplies corpus context to the
+    # entity classifier so it can correctly handle agent persona names
+    # (e.g. "Echo", "Sparrow") without misclassifying them as people.
+    corpus_origin = _run_pass_zero(
+        project_dir=args.dir,
+        palace_dir=cfg.palace_path,
+        llm_provider=llm_provider,
+    )
+
+    # Pass 1: discover entities — manifests + git authors first, prose detection
+    # as supplement for names mentioned only in docs/notes. Optional phase-2
+    # LLM refinement runs inside discover_entities when llm_provider is given.
     print(f"\n  Scanning for entities in: {args.dir}")
     if languages_tuple != ("en",):
         print(f"  Languages: {', '.join(languages_tuple)}")
-    files = scan_for_detection(args.dir)
-    if files:
-        print(f"  Reading {len(files)} files...")
-        detected = detect_entities(files, languages=languages_tuple)
-        total = len(detected["people"]) + len(detected["projects"]) + len(detected["uncertain"])
-        if total > 0:
-            confirmed = confirm_entities(detected, yes=getattr(args, "yes", False))
-            # Save confirmed entities to <project>/entities.json for the miner
-            if confirmed["people"] or confirmed["projects"]:
-                entities_path = Path(args.dir).expanduser().resolve() / "entities.json"
-                with open(entities_path, "w") as f:
-                    json.dump(confirmed, f, indent=2)
-                print(f"  Entities saved: {entities_path}")
-        else:
-            print("  No entities detected — proceeding with directory-based rooms.")
+    detected = discover_entities(
+        args.dir,
+        languages=languages_tuple,
+        llm_provider=llm_provider,
+        corpus_origin=corpus_origin,
+    )
+    total = (
+        len(detected["people"])
+        + len(detected["projects"])
+        + len(detected.get("topics", []))
+        + len(detected["uncertain"])
+    )
+    if total > 0:
+        confirmed = confirm_entities(detected, yes=getattr(args, "yes", False))
+        # Save confirmed entities to <project>/entities.json (per-project
+        # audit trail — user can inspect or hand-edit) AND merge into the
+        # global registry the miner reads at mine time. Topics are kept
+        # separately so the miner can later compute cross-wing tunnels
+        # from shared topics (see palace_graph.compute_topic_tunnels).
+        if confirmed["people"] or confirmed["projects"] or confirmed.get("topics"):
+            project_path = Path(args.dir).expanduser().resolve()
+            entities_path = project_path / "entities.json"
+            with open(entities_path, "w", encoding="utf-8") as f:
+                json.dump(confirmed, f, indent=2, ensure_ascii=False)
+            print(f"  Entities saved: {entities_path}")
+
+            from .config import normalize_wing_name
+            from .miner import add_to_known_entities
+
+            # Match the slug ``room_detector_local`` writes into
+            # ``mempalace.yaml`` so the miner's tunnel lookup hits the
+            # same key in ``topics_by_wing`` at mine time (issue #1194 —
+            # without this, hyphenated dirnames silently lose tunnels).
+            wing = normalize_wing_name(project_path.name)
+            registry_path = add_to_known_entities(confirmed, wing=wing)
+            print(f"  Registry updated: {registry_path}")
+    else:
+        print("  No entities detected — proceeding with directory-based rooms.")
 
     # Pass 2: detect rooms from folder structure
     detect_rooms_local(project_dir=args.dir, yes=getattr(args, "yes", False))
     cfg.init()
+    backend = _backend_arg(args)
+    if backend:
+        cfg.set_backend(backend)
 
     # Pass 3: protect git repos from accidentally committing per-project files
     _ensure_mempalace_files_gitignored(args.dir)
+
+    # Pass 4: offer to run mine immediately. The directory just had its
+    # rooms + entities set up, so 99% of users will mine next anyway —
+    # asking here removes the "remember to type the next command" friction.
+    # `--auto-mine` skips the prompt and mines automatically; `--yes` is
+    # SCOPED to entity auto-accept and does NOT imply mining.
+    _maybe_run_mine_after_init(args, cfg)
+
+
+def _format_size_mb(num_bytes: int) -> str:
+    """Render a byte count as a human-readable size for the mine estimate.
+
+    < 1 MB rounds up to ``<1 MB`` so users never see a misleading ``0 MB``
+    on small projects. Otherwise reports an integer megabyte count.
+    """
+    if num_bytes <= 0:
+        return "<1 MB"
+    mb = num_bytes / (1024 * 1024)
+    if mb < 1:
+        return "<1 MB"
+    return f"{mb:.0f} MB"
+
+
+def _maybe_run_mine_after_init(args, cfg) -> None:
+    """Prompt the user to mine the directory just initialised, or auto-mine
+    when ``--auto-mine`` was passed. Extracted so the prompt path is
+    unit-testable.
+
+    Behaviour matrix:
+
+    - default (no flags) — prompt, default Yes, mine in-process if accepted
+    - ``--yes`` — entity auto-accept only; STILL prompts for the mine step
+    - ``--auto-mine`` — skip the mine prompt and mine directly
+    - ``--yes --auto-mine`` — fully non-interactive
+
+    Mine errors are surfaced (not swallowed): a failing mine exits with a
+    non-zero status via :func:`sys.exit` so downstream scripts can see it.
+    The pre-scan that produces the file-count estimate is reused as the
+    mine input so we never walk the corpus twice.
+    """
+    from .miner import mine, scan_project
+
+    project_dir = args.dir
+    auto_mine = bool(getattr(args, "auto_mine", False))
+
+    # Single corpus walk: this scan feeds BOTH the "what would be mined"
+    # estimate the user sees in the prompt AND the file list mine() will
+    # process. We pass the result into mine() via the `files` kwarg so it
+    # doesn't re-walk the tree.
+    try:
+        scanned_files = scan_project(project_dir)
+        file_count = len(scanned_files)
+        total_bytes = 0
+        for fp in scanned_files:
+            try:
+                total_bytes += fp.stat().st_size
+            except OSError:
+                # Skip files that vanished between scan and stat — mine()
+                # will skip them too.
+                continue
+        size_str = _format_size_mb(total_bytes)
+    except Exception:
+        scanned_files = None
+        file_count = None
+        size_str = None
+
+    # Show the scope estimate BEFORE the prompt so the user knows what
+    # they are agreeing to. On a real corpus mine takes minutes; hitting
+    # Enter on a default-Y prompt with no size cue is a footgun.
+    if isinstance(file_count, int):
+        if size_str:
+            print(f"  ~{file_count} files (~{size_str}) would be mined into this palace.\n")
+        else:
+            print(f"  ~{file_count} files would be mined into this palace.\n")
+
+    if not auto_mine:
+        try:
+            answer = input("  Mine this directory now? [Y/n] ").strip().lower()
+        except EOFError:
+            # Non-interactive stdin (e.g. piped) — treat like decline so
+            # we don't block. User can re-run with --auto-mine to opt in.
+            answer = "n"
+        if answer not in ("", "y", "yes"):
+            print(f"\n  Skipped. Run `mempalace mine {shlex.quote(project_dir)}` when ready.")
+            return
+
+    palace_path = cfg.palace_path
+    try:
+        mine(
+            project_dir=project_dir,
+            palace_path=palace_path,
+            files=scanned_files,
+        )
+    except KeyboardInterrupt:
+        # mine() handles its own SIGINT summary + sys.exit(130); re-raise
+        # any KeyboardInterrupt that escapes (shouldn't happen) so the
+        # shell still sees a clean interrupt rather than a swallowed one.
+        raise
+    except Exception as e:
+        print(f"\n  ERROR: mine failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def cmd_mine(args):
@@ -119,31 +519,102 @@ def cmd_mine(args):
     for raw in args.include_ignored or []:
         include_ignored.extend(part.strip() for part in raw.split(",") if part.strip())
 
-    if args.mode == "convos":
-        from .convo_miner import mine_convos
+    if getattr(args, "background", False) and not getattr(args, "daemon", False):
+        print("mempalace: --background requires --daemon", file=sys.stderr)
+        sys.exit(2)
 
-        mine_convos(
-            convo_dir=args.dir,
-            palace_path=palace_path,
-            wing=args.wing,
-            agent=args.agent,
-            limit=args.limit,
-            dry_run=args.dry_run,
-            extract_mode=args.extract,
-        )
-    else:
-        from .miner import mine
+    if getattr(args, "daemon", False):
+        payload = {
+            "source": args.dir,
+            "mode": args.mode,
+            "wing": args.wing,
+            "agent": args.agent,
+            "limit": args.limit,
+            "dry_run": args.dry_run,
+            "extract": args.extract,
+            "no_gitignore": args.no_gitignore,
+            "include_ignored": include_ignored,
+            "max_chunks_per_file": getattr(args, "max_chunks_per_file", None),
+            "redetect_origin": getattr(args, "redetect_origin", False),
+        }
+        _submit_daemon_cli_job("mine", payload, args, background=getattr(args, "background", False))
+        return
 
-        mine(
+    # --redetect-origin re-runs corpus_origin on the current corpus state
+    # and overwrites <palace>/.mempalace/origin.json before mining proceeds.
+    # Heuristic-only by design — full LLM detection lives on `mempalace init`.
+    if getattr(args, "redetect_origin", False):
+        _run_pass_zero(
             project_dir=args.dir,
-            palace_path=palace_path,
-            wing_override=args.wing,
-            agent=args.agent,
-            limit=args.limit,
-            dry_run=args.dry_run,
-            respect_gitignore=not args.no_gitignore,
-            include_ignored=include_ignored,
+            palace_dir=palace_path,
+            llm_provider=None,
         )
+
+    from .palace import MineAlreadyRunning, MineValidationError
+
+    try:
+        if args.mode == "convos":
+            from .convo_miner import mine_convos
+
+            mine_convos(
+                convo_dir=args.dir,
+                palace_path=palace_path,
+                wing=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                extract_mode=args.extract,
+            )
+        elif args.mode == "extract":
+            from .format_miner import mine_formats
+
+            mine_formats(
+                format_dir=args.dir,
+                palace_path=palace_path,
+                wing=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+            )
+        else:
+            from .miner import mine
+
+            mine(
+                project_dir=args.dir,
+                palace_path=palace_path,
+                wing_override=args.wing,
+                agent=args.agent,
+                limit=args.limit,
+                dry_run=args.dry_run,
+                respect_gitignore=not args.no_gitignore,
+                include_ignored=include_ignored,
+                max_chunks_per_file=getattr(args, "max_chunks_per_file", None),
+            )
+    except MineAlreadyRunning as exc:
+        # A live MCP server or another mine is already writing to this
+        # palace. Surface the holder identity so the operator knows what
+        # to wait for (or stop), and exit non-zero so wrappers like
+        # nohup / scripts can detect the contention.
+        print(f"mempalace: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except MineValidationError as exc:
+        # PRAGMA quick_check on chroma.sqlite3 returned errors at end of mine.
+        # The corruption may pre-date the mine; we surface it here so automation
+        # cannot proceed against a half-broken palace. Reuse cmd_repair's
+        # recovery banner so the operator sees one consistent message regardless
+        # of which command surfaces it.
+        from .repair import print_sqlite_integrity_abort
+
+        print_sqlite_integrity_abort(exc.palace_path, exc.errors)
+        print(
+            "\n  PRAGMA quick_check after this mine reported errors (the corruption\n"
+            "  may pre-date the mine itself). Drawers may still be intact for direct\n"
+            "  lookup; wing-filtered or full-text search will fail until the FTS5\n"
+            "  index is rebuilt. `mempalace repair --yes` rebuilds the FTS5 virtual\n"
+            "  table automatically (step 6 of the recovery above).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def cmd_sweep(args):
@@ -185,6 +656,239 @@ def cmd_sweep(args):
             sys.exit(2)
     else:
         print(f"  ERROR: Not a file or directory: {target}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_sync(args):
+    """Prune drawers whose source files are gitignored, deleted, or moved (#1252)."""
+    palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+
+    if getattr(args, "background", False) and not getattr(args, "daemon", False):
+        print("mempalace: --background requires --daemon", file=sys.stderr)
+        sys.exit(2)
+
+    if getattr(args, "daemon", False):
+        payload = {
+            "dir": args.dir,
+            "root": list(args.root or []),
+            "wing": args.wing,
+            "dry_run": args.dry_run,
+        }
+        _submit_daemon_cli_job("sync", payload, args, background=getattr(args, "background", False))
+        return
+
+    from .palace import MineAlreadyRunning
+    from .wal import _wal_log
+    from .backends import detect_backend_for_path
+    from .palace import _backend_artifact_label, resolve_backend_name
+    from .sync import sync_palace
+
+    if not os.path.isdir(palace_path):
+        print(f"\n  No palace found at {palace_path}")
+        return
+    try:
+        backend_name = resolve_backend_name(palace_path)
+    except Exception as exc:  # noqa: BLE001 - user-facing CLI guard
+        print(f"\n  Could not resolve palace backend: {exc}", file=sys.stderr)
+        return
+    if detect_backend_for_path(palace_path) is None:
+        print(
+            f"\n  Palace dir at {palace_path} exists but has no "
+            f"{_backend_artifact_label(backend_name)} yet."
+        )
+        print("  Run: mempalace mine <dir>")
+        return
+
+    project_dirs = []
+    if args.dir:
+        project_dirs.append(os.path.expanduser(args.dir))
+    project_dirs.extend(os.path.expanduser(r) for r in args.root)
+    project_dirs = project_dirs or None
+
+    print(f"\n{'=' * 55}")
+    print("  MemPalace Sync — Gitignore-aware drawer prune")
+    print(f"{'=' * 55}")
+    print(f"  Palace:   {palace_path}")
+    if args.wing:
+        print(f"  Wing:     {args.wing}")
+    if project_dirs:
+        for p in project_dirs:
+            print(f"  Project:  {p}")
+    if args.dry_run:
+        print("  Mode:     DRY RUN (no deletions)")
+    else:
+        print("  Mode:     APPLY (deleting drawers)")
+    print(f"{'-' * 55}\n")
+
+    try:
+        report = sync_palace(
+            palace_path=palace_path,
+            project_dirs=project_dirs,
+            wing=args.wing,
+            dry_run=args.dry_run,
+            wal_log=_wal_log,
+        )
+    except MineAlreadyRunning as exc:
+        print(f"mempalace: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as exc:
+        print(f"mempalace: {exc}", file=sys.stderr)
+        sys.exit(2)
+    except Exception as exc:
+        print(f"mempalace: sync failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    removed_suffix = "(would remove)" if args.dry_run else "(removed)"
+    print(f"  Scanned:        {report['scanned']}")
+    print(f"  Kept:           {report['kept']}")
+    print(f"  Gitignored:     {report['gitignored']}  {removed_suffix}")
+    print(f"  Missing:        {report['missing']}  {removed_suffix}")
+    print(f"  No source:      {report['no_source']}  (kept)")
+    print(f"  Out of scope:   {report['out_of_scope']}  (kept)")
+
+    by_source = report.get("by_source") or {}
+    if by_source:
+        top = sorted(by_source.items(), key=lambda kv: -kv[1])[:5]
+        label = "Top sources to remove" if args.dry_run else "Top sources removed"
+        print(f"\n  {label}:")
+        for src, n in top:
+            print(f"    {src}  ({n})")
+
+    if args.dry_run:
+        if report["gitignored"] + report["missing"] > 0:
+            print("\n  Re-run with --apply to commit these deletions.")
+    else:
+        print(
+            f"\n  Removed {report['removed_drawers']} drawers, {report['removed_closets']} closets."
+        )
+
+    print(f"\n{'=' * 55}\n")
+
+
+def _submit_daemon_cli_job(kind: str, payload: dict, args, *, background: bool) -> None:
+    palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+    backend = _backend_arg(args)
+    from .daemon import DaemonError, submit_job
+
+    try:
+        job = submit_job(
+            kind,
+            payload,
+            palace_path=palace_path,
+            backend=backend,
+            wait=not background,
+            auto_start=True,
+        )
+    except DaemonError as exc:
+        print(f"mempalace: daemon submission failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if background:
+        print(f"Submitted daemon job {job['id']} ({kind})")
+        return
+
+    result = job.get("result") or {}
+    from .service import print_job_result
+
+    exit_code = print_job_result(result)
+    if job.get("state") != "succeeded" and exit_code == 0:
+        error = job.get("error") or {}
+        print(
+            f"mempalace: daemon job failed: {error.get('message', 'unknown error')}",
+            file=sys.stderr,
+        )
+        exit_code = 1
+    if exit_code:
+        sys.exit(exit_code)
+
+
+def cmd_daemon(args):
+    palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
+    backend = _backend_arg(args)
+    from .daemon import (
+        TERMINAL_STATES,
+        DaemonError,
+        QueueStore,
+        get_client_if_running,
+        job_to_dict,
+        queue_path,
+        start_daemon,
+        stop_daemon,
+    )
+
+    action = getattr(args, "daemon_action", None)
+    try:
+        if action == "start":
+            if args.foreground:
+                start_daemon(palace_path, backend=backend, foreground=True)
+                return
+            client = start_daemon(palace_path, backend=backend, foreground=False)
+            health = client.health()
+            print(f"MemPalace daemon running on 127.0.0.1:{client.port}")
+            print(f"  Palace: {health.get('palace_path')}")
+            print(f"  PID:    {health.get('pid')}")
+            return
+
+        if action == "stop":
+            if stop_daemon(palace_path):
+                print("MemPalace daemon stopping")
+            else:
+                print("MemPalace daemon is not running")
+            return
+
+        if action == "status":
+            client = get_client_if_running(palace_path)
+            if client is None:
+                print("MemPalace daemon is not running")
+                sys.exit(1)
+            health = client.health()
+            print("MemPalace daemon is running")
+            print(f"  Palace: {health.get('palace_path')}")
+            print(f"  PID:    {health.get('pid')}")
+            print(f"  Active: {health.get('active_job_id') or '-'}")
+            print(f"  Jobs:   {health.get('counts') or {}}")
+            return
+
+        if action == "jobs":
+            client = get_client_if_running(palace_path)
+            if client is not None:
+                jobs = client.list_jobs(limit=args.limit)
+            else:
+                qpath = queue_path(palace_path)
+                if not qpath.exists():
+                    jobs = []
+                else:
+                    jobs = [
+                        job_to_dict(job, include_payload=False)
+                        for job in QueueStore(qpath).list(args.limit)
+                    ]
+            for job in jobs:
+                print(f"{job['id']}  {job['state']:<9}  {job['kind']:<10}  {job['created_at']}")
+            return
+
+        if action == "wait":
+            client = get_client_if_running(palace_path)
+            if client is not None:
+                job = client.wait(args.job_id)
+            else:
+                qpath = queue_path(palace_path)
+                if not qpath.exists():
+                    raise DaemonError("daemon is not running")
+                job = job_to_dict(QueueStore(qpath).get(args.job_id))
+                if job.get("state") not in TERMINAL_STATES:
+                    raise DaemonError(f"daemon is not running; job {args.job_id} is {job['state']}")
+            result = job.get("result") or {}
+            from .service import print_job_result
+
+            exit_code = print_job_result(result)
+            if job.get("state") != "succeeded" and exit_code == 0:
+                print(f"mempalace: daemon job failed: {job.get('error')}", file=sys.stderr)
+                exit_code = 1
+            if exit_code:
+                sys.exit(exit_code)
+            return
+    except DaemonError as exc:
+        print(f"mempalace: daemon error: {exc}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -248,6 +952,53 @@ def cmd_status(args):
     status(palace_path=palace_path)
 
 
+def cmd_palace_set_embedder(args):
+    """Record (or force-override) a palace's embedder identity (RFC 001).
+
+    Resolves the ``unknown`` state for a legacy palace, or records a specific
+    model with ``--model``. It records identity on the palace only; it does not
+    change the configured model — when the two differ it prints how to align
+    ``MEMPALACE_EMBEDDING_MODEL``. ``--force`` overwrites an existing,
+    differently-named identity.
+    """
+    from .backends.base import EmbedderIdentityMismatchError
+    from .palace import set_palace_embedder_identity
+
+    config = MempalaceConfig()
+    palace_path = os.path.abspath(
+        os.path.expanduser(args.palace) if args.palace else config.palace_path
+    )
+    model = getattr(args, "model", None)
+    try:
+        old, new = set_palace_embedder_identity(
+            palace_path,
+            model=model,
+            force=getattr(args, "force", False),
+            backend=_backend_arg(args),
+        )
+    except EmbedderIdentityMismatchError as exc:
+        print(f"  ✗ {exc}")
+        raise SystemExit(2) from exc
+    if old is None:
+        print(f"  ✓ recorded embedder identity: {new.model_name} (dim={new.dimension})")
+    elif old.model_name == new.model_name:
+        print(f"  ✓ embedder identity unchanged: {new.model_name} (dim={new.dimension})")
+    else:
+        print(
+            f"  ✓ embedder identity changed: {old.model_name} → {new.model_name} "
+            f"(dim={new.dimension})"
+        )
+    # set-embedder records the palace's identity; it does not change the
+    # configured model. If they differ, the next normal open would mismatch —
+    # tell the user how to align them.
+    configured = config.embedding_model
+    if new.model_name and configured and new.model_name != configured:
+        print(
+            f"  ⚠ configured model is {configured!r}; set MEMPALACE_EMBEDDING_MODEL="
+            f"{new.model_name} (or run onboarding) so normal opens of this palace match."
+        )
+
+
 def cmd_hook(args):
     """Run hook logic: reads JSON from stdin, outputs JSON to stdout."""
     from .hooks_cli import run_hook
@@ -264,29 +1015,34 @@ def cmd_instructions(args):
 
 def cmd_mcp(args):
     """Show how to wire MemPalace into MCP-capable hosts."""
-    base_server_cmd = "python -m mempalace.mcp_server"
+    base_server_cmd = "mempalace-mcp"
+    cmd_parts = [base_server_cmd]
 
     if args.palace:
         resolved_palace = str(Path(args.palace).expanduser())
-        server_cmd = f"{base_server_cmd} --palace {shlex.quote(resolved_palace)}"
-    else:
-        server_cmd = base_server_cmd
+        cmd_parts.extend(["--palace", shlex.quote(resolved_palace)])
+    backend = _backend_arg(args)
+    if backend:
+        cmd_parts.extend(["--backend", shlex.quote(str(backend).strip().lower())])
+    server_cmd = " ".join(cmd_parts)
 
     print("MemPalace MCP quick setup:")
     print(f"  claude mcp add mempalace -- {server_cmd}")
+    print(f"  codex mcp add mempalace -- {server_cmd}")
     print("\nRun the server directly:")
     print(f"  {server_cmd}")
 
     if not args.palace:
         print("\nOptional custom palace:")
         print(f"  claude mcp add mempalace -- {base_server_cmd} --palace /path/to/palace")
+        print(f"  codex mcp add mempalace -- {base_server_cmd} --palace /path/to/palace")
         print(f"  {base_server_cmd} --palace /path/to/palace")
 
 
 def cmd_compress(args):
     """Compress drawers in a wing using AAAK Dialect."""
     from .dialect import Dialect
-    from .palace import get_collection
+    from .palace import get_closets_collection
 
     palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
 
@@ -304,12 +1060,13 @@ def cmd_compress(args):
     else:
         dialect = Dialect()
 
-    # Connect to palace
-    try:
-        col = get_collection(palace_path, "mempalace_drawers", create=False)
-    except Exception:
-        print(f"\n  No palace found at {palace_path}")
-        print("  Run: mempalace init <dir> then mempalace mine <dir>")
+    # State-aware open: distinguish "no palace" from "initialized but empty"
+    # from "corrupt" via the shared helper (#1498). MCP and library callers
+    # catch the backend exceptions directly; CLI gets the friendly print.
+    from .palace import _open_collection_or_explain
+
+    col = _open_collection_or_explain(palace_path, collection_name="mempalace_drawers")
+    if col is None:
         sys.exit(1)
 
     # Query drawers in batches to avoid SQLite variable limit (~999)
@@ -381,7 +1138,10 @@ def cmd_compress(args):
     # Store compressed versions (unless dry-run)
     if not args.dry_run:
         try:
-            comp_col = get_collection(palace_path, "mempalace_compressed", create=True)
+            # Route through palace.get_closets_collection so the shared
+            # _DEFAULT_BACKEND is reused (avoids a redundant backend
+            # instance and its potential WAL-lock contention on Windows).
+            comp_col = get_closets_collection(palace_path, create=True)
             for doc_id, compressed, meta, stats in compressed_entries:
                 comp_meta = dict(meta)
                 comp_meta["compression_ratio"] = round(stats["size_ratio"], 1)
@@ -392,7 +1152,7 @@ def cmd_compress(args):
                     metadatas=[comp_meta],
                 )
             print(
-                f"  Stored {len(compressed_entries)} compressed drawers in 'mempalace_compressed' collection."
+                f"  Stored {len(compressed_entries)} compressed drawers in 'mempalace_closets' collection."
             )
         except Exception as e:
             print(f"  Error storing compressed drawers: {e}")
@@ -408,7 +1168,40 @@ def cmd_compress(args):
         print("  (dry run -- nothing stored)")
 
 
+def _reconfigure_stdio_utf8_on_windows():
+    """Decode stdio as UTF-8 on Windows for the primary `mempalace` CLI.
+
+    Thin wrapper around the shared helper in ``mempalace._stdio``. The CLI
+    overrides stdout/stderr to ``replace`` because ``mempalace search``
+    prints verbatim drawer text that may carry surrogate halves
+    round-tripped from filenames -- ``strict`` would crash mid-print and
+    lose the rest of the search result block. stdin keeps the default
+    ``surrogateescape`` so a redirected non-UTF-8 file does not kill the
+    read on the first bad byte.
+    """
+    from ._stdio import reconfigure_stdio_utf8_on_windows
+
+    reconfigure_stdio_utf8_on_windows(stdout_errors="replace", stderr_errors="replace")
+
+
 def main():
+    """CLI entry point for the ``mempalace`` console script.
+
+    Side effect: pops ``PYTHONPATH`` from ``os.environ`` (see #1423) so
+    any subprocess this CLI spawns inherits a clean env. Host applications
+    that call ``main()`` programmatically should be aware that the parent
+    process loses ``PYTHONPATH`` as well. Library imports
+    (``import mempalace.searcher`` from a host app) do NOT trigger this
+    side effect; only the CLI/MCP entry points pop the env var.
+    """
+    # Drop leaked PYTHONPATH so any subprocess the CLI spawns (mine workers,
+    # repair tooling) starts with a clean env. The sys.path filter in
+    # mempalace/__init__.py already protects this process from the same
+    # ABI mismatch; here we extend the protection to children.
+    os.environ.pop("PYTHONPATH", None)
+
+    _reconfigure_stdio_utf8_on_windows()
+
     version_label = f"MemPalace {__version__}"
     parser = argparse.ArgumentParser(
         description="MemPalace — Give your AI a memory. No API key required.",
@@ -426,6 +1219,12 @@ def main():
         default=None,
         help="Where the palace lives (default: from ~/.mempalace/config.json or ~/.mempalace/palace)",
     )
+    parser.add_argument(
+        "--backend",
+        dest="global_backend",
+        default=None,
+        help="Storage backend to use for this command (default: config/env/detected/chroma)",
+    )
 
     sub = parser.add_subparsers(dest="command")
 
@@ -433,9 +1232,22 @@ def main():
     p_init = sub.add_parser("init", help="Detect rooms from your folder structure")
     p_init.add_argument("dir", help="Project directory to set up")
     p_init.add_argument(
+        "--backend",
+        default=None,
+        help="Storage backend to persist for this palace (default: chroma)",
+    )
+    p_init.add_argument(
         "--yes",
         action="store_true",
         help="Auto-accept all detected entities (non-interactive)",
+    )
+    p_init.add_argument(
+        "--auto-mine",
+        action="store_true",
+        help=(
+            "Skip the post-init mine prompt and run mine automatically. "
+            "Combine with --yes for a fully non-interactive setup."
+        ),
     )
     p_init.add_argument(
         "--lang",
@@ -447,15 +1259,79 @@ def main():
             "When given, the value is also persisted to config.json."
         ),
     )
+    p_init.add_argument(
+        "--llm",
+        action="store_true",
+        help=(
+            "DEPRECATED — LLM-assisted entity refinement is now ON by default. "
+            "This flag is preserved for backward compatibility; pass --no-llm "
+            "to opt out instead."
+        ),
+    )
+    p_init.add_argument(
+        "--no-llm",
+        action="store_true",
+        help=(
+            "Disable LLM-assisted entity refinement. Run init in heuristics-only "
+            "mode (no provider acquisition, no LLM calls). Use when running "
+            "without a local LLM and you don't want the graceful-fallback message."
+        ),
+    )
+    p_init.add_argument(
+        "--llm-provider",
+        default="ollama",
+        choices=["ollama", "openai-compat", "anthropic"],
+        help="LLM provider (default: ollama). Pass --no-llm to disable LLM-assisted refinement entirely.",
+    )
+    p_init.add_argument(
+        "--llm-model",
+        default="gemma4:e4b",
+        help="Model name for the chosen provider (default: gemma4:e4b for Ollama).",
+    )
+    p_init.add_argument(
+        "--llm-endpoint",
+        default=None,
+        help=(
+            "Provider endpoint URL. Default for Ollama: http://localhost:11434. "
+            "Required for openai-compat."
+        ),
+    )
+    p_init.add_argument(
+        "--llm-api-key",
+        default=None,
+        help=(
+            "API key for the provider. For anthropic, defaults to $ANTHROPIC_API_KEY; "
+            "for openai-compat, defaults to $OPENAI_API_KEY."
+        ),
+    )
+    p_init.add_argument(
+        "--accept-external-llm",
+        action="store_true",
+        help=(
+            "Bypass the interactive consent prompt that fires when an external "
+            "LLM is configured via an environment-variable API key (issue #26). "
+            "Use this in CI / non-interactive runs where you've already decided "
+            "the external send is acceptable."
+        ),
+    )
 
     # mine
     p_mine = sub.add_parser("mine", help="Mine files into the palace")
     p_mine.add_argument("dir", help="Directory to mine")
     p_mine.add_argument(
+        "--backend",
+        default=None,
+        help="Storage backend to use for this mine (default: config/env/detected/chroma)",
+    )
+    p_mine.add_argument(
         "--mode",
-        choices=["projects", "convos"],
+        choices=["projects", "convos", "extract"],
         default="projects",
-        help="Ingest mode: 'projects' for code/docs (default), 'convos' for chat exports",
+        help=(
+            "Ingest mode: 'projects' for code/docs (default), 'convos' for chat "
+            "exports, 'extract' for office documents (PDF/DOCX/RTF/etc., requires "
+            "mempalace[extract])"
+        ),
     )
     p_mine.add_argument("--wing", default=None, help="Wing name (default: directory name)")
     p_mine.add_argument(
@@ -476,13 +1352,47 @@ def main():
     )
     p_mine.add_argument("--limit", type=int, default=0, help="Max files to process (0 = all)")
     p_mine.add_argument(
+        "--redetect-origin",
+        action="store_true",
+        help=(
+            "Re-run corpus_origin detection on this directory and overwrite "
+            "<palace>/.mempalace/origin.json. Useful when the corpus has grown "
+            "since `mempalace init` and the stored origin may be stale. "
+            "Heuristic-only (no LLM call) — re-run `mempalace init --llm` for "
+            "Tier 2 refinement."
+        ),
+    )
+    p_mine.add_argument(
         "--dry-run", action="store_true", help="Show what would be filed without filing"
+    )
+    p_mine.add_argument(
+        "--daemon",
+        action="store_true",
+        help="Submit this mine to the opt-in local daemon queue",
+    )
+    p_mine.add_argument(
+        "--background",
+        action="store_true",
+        help="With --daemon, return a job id immediately instead of waiting",
     )
     p_mine.add_argument(
         "--extract",
         choices=["exchange", "general"],
         default="exchange",
         help="Extraction strategy for convos mode: 'exchange' (default) or 'general' (5 memory types)",
+    )
+
+    p_mine.add_argument(
+        "--max-chunks-per-file",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            f"Per-file chunk cap; files producing more chunks are skipped with a "
+            f"summary counter. Default {_CLI_MAX_CHUNKS_PER_FILE_DEFAULT} "
+            f"(or MEMPALACE_MAX_CHUNKS_PER_FILE). Set 0 to disable. Lower this on "
+            f"Windows if you hit ONNX bad_alloc (#1455)."
+        ),
     )
 
     # sweep
@@ -496,9 +1406,56 @@ def main():
         help="A .jsonl transcript file, or a directory to scan recursively",
     )
 
+    # sync
+    p_sync = sub.add_parser(
+        "sync",
+        help="Prune drawers whose source files are gitignored, deleted, or moved (#1252)",
+    )
+    p_sync.add_argument(
+        "dir",
+        nargs="?",
+        default=None,
+        help="Project root to sync (optional; auto-detects from drawer metadata)",
+    )
+    p_sync.add_argument("--wing", default=None, help="Limit to one wing")
+    p_sync.add_argument(
+        "--root",
+        action="append",
+        default=[],
+        help="Additional project root (repeatable)",
+    )
+    p_sync.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        default=True,
+        help="Preview only (default)",
+    )
+    p_sync.add_argument(
+        "--apply",
+        dest="dry_run",
+        action="store_false",
+        help="Actually delete drawers (overrides --dry-run; requires --wing or a project root)",
+    )
+    p_sync.add_argument(
+        "--daemon",
+        action="store_true",
+        help="Submit this sync to the opt-in local daemon queue",
+    )
+    p_sync.add_argument(
+        "--background",
+        action="store_true",
+        help="With --daemon, return a job id immediately instead of waiting",
+    )
+
     # search
     p_search = sub.add_parser("search", help="Find anything, exact words")
     p_search.add_argument("query", help="What to search for")
+    p_search.add_argument(
+        "--backend",
+        default=None,
+        help="Storage backend to use for this search (default: config/env/detected/chroma)",
+    )
     p_search.add_argument("--wing", default=None, help="Limit to one project")
     p_search.add_argument("--room", default=None, help="Limit to one room")
     p_search.add_argument("--results", type=int, default=5, help="Number of results")
@@ -552,7 +1509,7 @@ def main():
     p_hook_run.add_argument(
         "--hook",
         required=True,
-        choices=["session-start", "stop", "precompact"],
+        choices=["session-start", "stop", "session-end", "precompact"],
         help="Hook name to run",
     )
     p_hook_run.add_argument(
@@ -571,15 +1528,73 @@ def main():
     for instr_name in ["init", "search", "mine", "help", "status"]:
         instructions_sub.add_parser(instr_name, help=f"Output {instr_name} instructions")
 
+    # daemon
+    p_daemon = sub.add_parser("daemon", help="Manage the opt-in long-lived daemon")
+    daemon_sub = p_daemon.add_subparsers(dest="daemon_action")
+    p_daemon_start = daemon_sub.add_parser("start", help="Start the daemon")
+    p_daemon_start.add_argument(
+        "--foreground",
+        action="store_true",
+        help="Run in the foreground for debugging or process supervisors",
+    )
+    p_daemon_start.add_argument(
+        "--backend",
+        default=None,
+        help="Storage backend for this daemon (default: config/env/detected/chroma)",
+    )
+    daemon_sub.add_parser("stop", help="Stop the daemon")
+    daemon_sub.add_parser("status", help="Show daemon status")
+    p_daemon_jobs = daemon_sub.add_parser("jobs", help="List recent daemon jobs")
+    p_daemon_jobs.add_argument("--limit", type=int, default=20, help="Max jobs to show")
+    p_daemon_wait = daemon_sub.add_parser("wait", help="Wait for a daemon job")
+    p_daemon_wait.add_argument("job_id", help="Job id returned by --background")
+
     # mcp
-    sub.add_parser(
+    p_mcp = sub.add_parser(
         "mcp",
         help="Show MCP setup command for connecting MemPalace to your AI client",
     )
+    p_mcp.add_argument(
+        "--backend",
+        default=None,
+        help="Storage backend to include in the MCP startup command",
+    )
 
-    sub.add_parser("status", help="Show what's been filed")
+    # status
+    p_status = sub.add_parser("status", help="Show what's been filed")
+    p_status.add_argument(
+        "--backend",
+        default=None,
+        help="Storage backend to use for status (default: config/env/detected/chroma)",
+    )
+
+    p_palace = sub.add_parser("palace", help="Palace maintenance commands")
+    palace_sub = p_palace.add_subparsers(dest="palace_action")
+    p_set_embedder = palace_sub.add_parser(
+        "set-embedder",
+        help="Record/override the palace's embedder identity (resolve 'unknown', or switch models)",
+    )
+    p_set_embedder.add_argument(
+        "--model",
+        default=None,
+        help="Embedder model to record (default: current configured model). "
+        "Records identity on the palace only; does not change the configured "
+        "model (prints how to align MEMPALACE_EMBEDDING_MODEL if they differ).",
+    )
+    p_set_embedder.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing identity that names a different model "
+        "(only if you know the stored vectors are compatible)",
+    )
+    p_set_embedder.add_argument(
+        "--backend",
+        default=None,
+        help="Storage backend (default: config/env/detected/elasticsearch)",
+    )
 
     args = parser.parse_args()
+    _apply_backend_arg(args)
 
     if not args.command:
         parser.print_help()
@@ -602,12 +1617,27 @@ def main():
         cmd_instructions(args)
         return
 
+    if args.command == "palace":
+        if getattr(args, "palace_action", None) == "set-embedder":
+            cmd_palace_set_embedder(args)
+        else:
+            p_palace.print_help()
+        return
+
+    if args.command == "daemon":
+        if not getattr(args, "daemon_action", None):
+            p_daemon.print_help()
+            return
+        cmd_daemon(args)
+        return
+
     dispatch = {
         "init": cmd_init,
         "mine": cmd_mine,
         "split": cmd_split,
         "search": cmd_search,
         "sweep": cmd_sweep,
+        "sync": cmd_sync,
         "mcp": cmd_mcp,
         "compress": cmd_compress,
         "wake-up": cmd_wakeup,

@@ -713,6 +713,10 @@ class ElasticsearchBackend(BaseBackend):
     name = "elasticsearch"
     spec_version = "1.0"
     capabilities = frozenset({"hybrid_search", "server_side_embeddings"})
+    # Server-mode: palaces live in the ES cluster, so there are never local
+    # on-disk artifacts to detect. State checks that gate on local artifacts
+    # (e.g. palace._open_collection_or_explain State B) must skip this backend.
+    server_mode = True
 
     def __init__(self):
         self._clients: dict[str, Elasticsearch] = {}  # citadel → ES client

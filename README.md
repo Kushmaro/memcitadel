@@ -287,7 +287,7 @@ The MCP tool interface is identical. Agents don't know or care which backend is 
 
 ---
 
-## Upstream compatibility (synced with mempalace v3.3.2)
+## Upstream compatibility (synced with mempalace v3.5.0)
 
 MemCitadel tracks upstream MemPalace. The ES backend implements the RFC 001 §10 `BaseCollection`/`BaseBackend` contract, so most upstream features work unmodified under Elasticsearch.
 
@@ -299,9 +299,15 @@ MemCitadel tracks upstream MemPalace. The ES backend implements the RFC 001 §10
 - Exporter, fact-checker, query sanitizer
 - Source adapter scaffold (RFC 002 §9) — `BaseSourceAdapter` / `PalaceContext` available for third-party adapters; no first-party ES adapter registered yet
 - i18n expansion (pt-br, ru, it, hi, id + existing locales)
+- Opt-in MCP HTTP transport (DNS-rebinding guard, optional token auth)
+- Opt-in long-lived daemon (`memcitadel daemon start`) + background mine jobs
+- Additional opt-in backends from upstream: `qdrant`, `pgvector`, `sqlite_exact`
+- Embedder-identity contract (RFC 001) + `palace set-embedder` CLI
+- Write-ahead log (`mempalace.wal`), backups module, hallways/tunnels expansion
 
 **Not ported (ChromaDB-specific):**
 
+- ChromaDB backend itself (`backends/chroma.py`) — replaced by Elasticsearch
 - HNSW quarantine safeguard — specific to chromadb's on-disk HNSW layout
 - `mempalace repair` / `mempalace migrate` CLI subcommands — rebuilt chromadb indexes from SQLite metadata
 - `mempalace.dedup` module — HNSW-based deduplication
